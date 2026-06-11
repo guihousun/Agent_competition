@@ -205,9 +205,19 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
     )
     def zip_extract(zip_path: str, output_dir: str = "") -> str:
         """Extract ZIP file and return detailed file list."""
+        # Resolve relative paths from current working directory
         zip_path = Path(zip_path)
+        if not zip_path.is_absolute():
+            # Try relative to CWD first
+            if not zip_path.exists():
+                # Try relative to project root (parent of source/)
+                project_root = Path.cwd()
+                alt_path = project_root / zip_path
+                if alt_path.exists():
+                    zip_path = alt_path
+
         if not zip_path.exists():
-            return json.dumps({"error": f"ZIP file not found: {zip_path}"}, ensure_ascii=False)
+            return json.dumps({"error": f"ZIP file not found: {zip_path}. CWD: {Path.cwd()}"}, ensure_ascii=False)
 
         if not output_dir:
             output_dir = tempfile.mkdtemp(prefix="zip_extract_")
