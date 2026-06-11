@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from source.runtime.env_config import ModelConfig
+from source.runtime.tracing import get_active_trace
 
 
 @dataclass
@@ -24,13 +26,34 @@ class ChatCompletionClient:
         tool_choice: str = "auto",
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        start = time.monotonic()
+        result = await asyncio.to_thread(
             self._create_sync,
             messages=messages,
             tools=tools or [],
             tool_choice=tool_choice,
             response_format=response_format,
         )
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        trace = get_active_trace()
+        if trace is not None:
+            try:
+                msg = first_message(result)
+                trace.record_llm_call(
+                    duration_ms=duration_ms,
+                    model=self.config.model,
+                    messages_count=len(messages),
+                    tools_count=len(tools or []),
+                    output_preview=str(msg.get("content") or "")[:500],
+                    tool_calls=msg.get("tool_calls") or [],
+                    usage=result.get("usage"),
+                    finish_reason=(result.get("choices") or [{}])[0].get("finish_reason"),
+                )
+            except Exception:
+                pass  # tracing must never break the main flow
+
+        return result
 
     def _create_sync(
         self,

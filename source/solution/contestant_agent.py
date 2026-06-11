@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from source.runtime.env_config import ModelConfig, env_bool, env_int, load_dotenv
 from source.runtime.agent_context import AgentContext
 from source.runtime.openai_chat_client import ChatCompletionClient, first_message
+from source.runtime.tracing import get_active_trace
 
 
 SYSTEM_PROMPT = """
@@ -17,6 +19,47 @@ SYSTEM_PROMPT = """
 文件内容不会自动进入上下文；需要读取题目声明的文件或目录内文件时，调用 text_read_file。
 如果需要使用某个 skill，先调用 skill_load 读取完整 SKILL.md，再按其中说明决定是否 skill_read_resource 或 skill_run。
 如果需要复核，可以调用 agent_delegate。
+
+【答案格式规则】（必须严格遵守，违反则不得分）
+
+1. 只输出答案正文，不要：
+   - 解释说明（"答案是..."、"根据分析..."）
+   - Markdown 代码块（```json ... ```）
+   - <think> 标签
+   - 结果对象包装（{"answer": "..."}）
+
+2. 根据题目类型选择格式：
+
+   a) 精确匹配题：
+      - 直接输出文本本身，去除首尾空白
+      - ✓ mock-file-read-ok
+      - ✗ "mock-file-read-ok"
+      - ✗ 答案是：mock-file-read-ok
+
+   b) JSON 字段匹配题：
+      - 输出严格 JSON，字段按字母顺序排列
+      - ✓ {"amount": 100, "supplier": "A"}
+      - ✗ {"supplier": "A", "amount": 100}
+
+   c) 列表匹配题：
+      - 输出 JSON 数组，元素排序去重
+      - ✓ ["A", "B", "C"]
+      - ✗ ["C", "A", "B"]
+      - ✗ ["A", "B", "B", "C"]
+
+   d) 数字答案：
+      - 不要单位，不要千分位
+      - 保留题目要求的精度
+      - ✓ 1234.56
+      - ✗ 1,234.56
+      - ✗ 1234.56 元
+
+3. 如果不确定格式，调用 answer_formatter 工具格式化
+
+4. 最终输出前自检：
+   - 是否有遗漏的字段？
+   - 列表是否完整？
+   - 数字精度是否正确？
 
 最终只输出题目要求的答案正文。不要输出思考过程、markdown、代码块、<think> 标签、结果对象或额外元数据字段。
 """.strip()
@@ -81,7 +124,8 @@ class ContestantAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 6)
+        max_iter = env_int("AGENT_DEMO_MAX_ITER", 8)
+        final_answer: str | None = None
         for step in range(1, max_iter + 1):
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
             message = first_message(completion)
@@ -91,6 +135,28 @@ class ContestantAgent:
             messages.append(self._assistant_message_for_history(message))
             if not tool_calls:
                 if content.strip():
+                    # 自检：保存候选答案，多一轮验证
+                    if final_answer is None and step < max_iter - 1:
+                        final_answer = self._clean_final_answer(content)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "自检：请验证上述答案是否满足题目要求。\n"
+                                "检查点：\n"
+                                "1. 是否直接回答了问题？\n"
+                                "2. 是否满足格式要求？\n"
+                                "3. 是否遗漏关键信息？\n"
+                                "如果发现问题，调用工具修正后输出新答案；"
+                                "如果确认无误，回复 VERIFIED。"
+                            ),
+                        })
+                        continue
+                    # 第二轮：LLM 回复 VERIFIED 或新答案
+                    if final_answer is not None:
+                        if content.strip().upper() == "VERIFIED":
+                            return final_answer
+                        # LLM 给出了修正后的答案
+                        return self._clean_final_answer(content)
                     return self._clean_final_answer(content)
                 messages.append({"role": "user", "content": "请输出最终答案文本。"})
                 continue
@@ -212,13 +278,29 @@ class ContestantAgent:
         return self._clean_final_answer(str(first_message(completion).get("content") or ""))
 
     async def _call_tool_as_text(self, context: AgentContext, tool_name: str, tool_args: dict[str, Any]) -> str:
+        trace = get_active_trace()
+        start = time.monotonic()
+        error_text: str | None = None
         try:
             tool_result = await context.call_tool(tool_name, tool_args)
         except Exception as exc:
             tool_result = f"工具调用失败：{exc}"
-        if isinstance(tool_result, str):
-            return tool_result
-        return json.dumps(tool_result, ensure_ascii=False)
+            error_text = str(exc)
+        result_text = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
+
+        if trace is not None:
+            try:
+                trace.record_tool_call(
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    tool_name=tool_name,
+                    arguments=tool_args,
+                    result=result_text[:3000],
+                    error=error_text,
+                )
+            except Exception:
+                pass  # tracing must never break the main flow
+
+        return result_text
 
     def _assistant_message_for_history(self, message: dict[str, Any]) -> dict[str, Any]:
         history_message: dict[str, Any] = {

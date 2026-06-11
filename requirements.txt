@@ -1,1 +1,12 @@
+# Python version requirement
+# This project requires Python 3.11.0+
+# Install: https://www.python.org/downloads/release/python-3110/
+# Do NOT use conda - use official Python installer or pyenv
 
+python>=3.11.0
+
+# No third-party dependencies required for runtime
+# All tools use Python standard library only
+
+# Optional: for MCP server mode (not required for contest)
+# fastmcp>=0.5.0
