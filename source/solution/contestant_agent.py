@@ -32,6 +32,26 @@ SYSTEM_PROMPT = """
 - 压缩包解压 → zip_extract / tar_extract
 - 答案格式化 → answer_formatter
 
+
+【路径管理规范】（必须严格遵守）
+
+1. 工作目录：当前工作目录是项目根目录
+2. 题目文件路径：使用题目 files 字段中声明的路径（相对路径）
+   - ✓ files/nested_archive.zip
+   - ✗ ./source/examples/files/nested_archive.zip
+   - ✗ D:\Research_vault\...
+ested_archive.zip
+3. 工具返回的路径：直接使用，不要修改
+   - zip_extract 返回 output_dir，直接用这个路径读取文件
+   - 不要自己猜测或拼接路径
+4. 解压文件：在 zip_extract 返回的 output_dir 中查找
+   - 不要假设解压到当前目录
+   - 不要尝试其他路径
+5. 路径拼接：使用正斜杠 / 或双反斜杠 \
+   - ✓ output_dir/config.json
+   - ✓ output_dir\config.json
+   - ✗ output_dir\config.json（单反斜杠可能转义）
+
 【Skill 使用流程】
 1. skill_load 加载 skill（获取完整说明）
 2. 按 SKILL.md 指示调用 skill_run
