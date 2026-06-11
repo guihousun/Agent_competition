@@ -329,10 +329,10 @@ body {
 .wf-status.error { background: var(--accent-red); }
 
 .wf-bar-container {
-  height: 22px;
+  height: 26px;
   background: var(--bg-tertiary);
   border-radius: 4px;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   align-items: center;
   position: relative;
@@ -347,18 +347,19 @@ body {
 }
 
 .wf-segment {
-  height: 16px;
-  border-radius: 2px;
-  min-width: 3px;
+  height: 20px;
+  border-radius: 3px;
+  min-width: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
-  color: rgba(255,255,255,0.9);
+  font-size: 10px;
+  color: rgba(255,255,255,0.95);
   font-weight: 600;
-  padding: 0 3px;
+  padding: 0 4px;
   white-space: nowrap;
-  overflow: hidden;
+  overflow: visible;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
 
 .wf-segment.llm_call { background: var(--span-llm); }
@@ -946,14 +947,16 @@ function renderWaterfall(data) {
   el.innerHTML = qs.map((q, i) => {
     const dur = q.duration_ms || 0;
     const spans = q.spans || [];
+    // Scale factor to make segments wider (1.5x)
+    const scale = 1.5;
     const segments = spans.map(s => {
       const cls = spanTypeClass(s.type, s.data);
       const label = spanTypeLabel(s.type, s.data);
-      const w = Math.max((s.duration_ms / maxDur) * 100, 0.5);
+      const w = Math.min(Math.max((s.duration_ms / maxDur) * 100 * scale, 2), 100);
       const toolName = s.data?.tool_name || '';
-      const displayName = w > 8 ? label : '';
+      const displayName = w > 5 ? label : '';
       const tooltip = `${toolName || s.type} - ${s.duration_ms}ms`;
-      return `<div class="wf-segment ${cls}" style="width:${w}%" title="${escapeHtml(tooltip)}">${displayName}</div>`;
+      return `<div class="wf-segment ${cls}" style="width:${w.toFixed(1)}%" title="${escapeHtml(tooltip)}">${displayName}</div>`;
     }).join('');
 
     return `
