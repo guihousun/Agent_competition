@@ -1,0 +1,11 @@
+{
+  "suppliers": [
+    {"name": "SupplierA", "rating": 92, "category": "electronics"},
+    {"name": "SupplierB", "rating": 88, "category": "materials"},
+    {"name": "SupplierC", "rating": 95, "category": "electronics"},
+    {"name": "SupplierD", "rating": 78, "category": "services"},
+    {"name": "SupplierE", "rating": 85, "category": "materials"}
+  ],
+  "last_updated": "2024-01-20",
+  "scale": "0-100"
+}

@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.parse
@@ -221,6 +222,58 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
                 extracted = [str(Path(output_dir) / name) for name in zf.namelist()]
         except zipfile.BadZipFile:
             return json.dumps({"error": f"Invalid ZIP file: {zip_path}"}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+        return json.dumps(
+            {
+                "output_dir": str(output_dir),
+                "files": extracted,
+                "count": len(extracted),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @register_tool(
+        name="tar_extract",
+        description="Extract TAR/TAR.GZ/TAR.BZ2 file contents. Returns list of extracted files. Supports .tar, .tar.gz, .tgz, .tar.bz2 formats.",
+        input_schema=object_schema(
+            {
+                "tar_path": {
+                    "type": "string",
+                    "description": "Path to TAR file (.tar, .tar.gz, .tgz, .tar.bz2)",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory (default: temp directory)",
+                    "default": "",
+                },
+            },
+            ["tar_path"],
+        ),
+        kind="mcp",
+        risk="medium",
+    )
+    def tar_extract(tar_path: str, output_dir: str = "") -> str:
+        """Extract TAR file and return list of extracted files."""
+        tar_path = Path(tar_path)
+        if not tar_path.exists():
+            return json.dumps({"error": f"TAR file not found: {tar_path}"}, ensure_ascii=False)
+
+        if not output_dir:
+            output_dir = tempfile.mkdtemp(prefix="tar_extract_")
+        else:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        extracted = []
+        try:
+            with tarfile.open(tar_path, "r:*") as tf:
+                tf.extractall(output_dir)
+                extracted = [str(Path(output_dir) / name) for name in tf.getnames()]
+        except tarfile.TarError as exc:
+            return json.dumps({"error": f"Invalid TAR file: {exc}"}, ensure_ascii=False)
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 

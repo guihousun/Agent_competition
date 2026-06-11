@@ -1,12 +1,50 @@
+# Agent Contest Python Demo - Requirements
+# ============================================================
 # Python version requirement
+# ============================================================
 # This project requires Python 3.11.0+
 # Install: https://www.python.org/downloads/release/python-3110/
 # Do NOT use conda - use official Python installer or pyenv
 
 python>=3.11.0
 
-# No third-party dependencies required for runtime
-# All tools use Python standard library only
+# ============================================================
+# Runtime Dependencies
+# ============================================================
+# NO third-party dependencies required!
+# All tools use Python standard library only:
+#
+# Standard library modules used:
+#   - csv, io, json, re, subprocess, sys, tempfile, time
+#   - urllib.error, urllib.parse, urllib.request
+#   - zipfile, tarfile
+#   - pathlib, contextvars, dataclasses
+#   - http.client (for fallback HTTP)
+#   - asyncio (for async runtime)
 
-# Optional: for MCP server mode (not required for contest)
+# ============================================================
+# Optional Dependencies
+# ============================================================
+
+# For MCP server mode (not required for contest runtime)
 # fastmcp>=0.5.0
+
+# For development/testing (not required for contest)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+
+# ============================================================
+# Installation
+# ============================================================
+# 1. Install Python 3.11.0+ from https://www.python.org/downloads/
+# 2. (Optional) Create virtual environment:
+#    python -m venv .venv
+#    .venv\Scripts\activate  (Windows)
+#    source .venv/bin/activate  (Linux/Mac)
+# 3. No pip install needed - all dependencies are standard library!
+#
+# ============================================================
+# Verification
+# ============================================================
+# Run this to verify your setup:
+#   python -c "import csv, json, zipfile, tarfile, urllib.request; print('OK')"

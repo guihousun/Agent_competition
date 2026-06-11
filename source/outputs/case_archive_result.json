@@ -1,0 +1,10 @@
+[
+  {
+    "id": "case_archive_001",
+    "answer": "{\"completed_count\": 5, \"currency\": \"USD\", \"total_amount\": 1720.75}"
+  },
+  {
+    "id": "case_archive_002",
+    "answer": "{\"error_count\": 5, \"warning_count\": 5}"
+  }
+]

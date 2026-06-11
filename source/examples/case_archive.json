@@ -1,0 +1,24 @@
+[
+  {
+    "id": "case_archive_001",
+    "title": "压缩包处理 - ZIP 解压与数据提取",
+    "description": "请完成以下任务：\n\n1. 解压 files/data_archive.zip 到临时目录\n2. 读取解压后的 data.csv 文件\n3. 计算 status 列为 \"completed\" 的订单数量\n4. 计算这些已完成订单的 total_amount 总和\n5. 输出 JSON 格式：{\"completed_count\": 数量, \"total_amount\": 总和, \"currency\": \"USD\"}\n\n注意：金额字段按字母顺序排列，数字保留 2 位小数。",
+    "explanation": "测试 ZIP 解压 + 文件读取 + 数据筛选 + 聚合计算能力",
+    "files": ["files/data_archive.zip"],
+    "level": 3,
+    "tools": ["zip_extract", "text_read_file", "csv_read", "csv_aggregate", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  },
+  {
+    "id": "case_archive_002",
+    "title": "压缩包处理 - TAR 解压与多文件分析",
+    "description": "请完成以下任务：\n\n1. 解压 files/reports.tar.gz 到临时目录\n2. 读取解压后的所有 .txt 文件（应该有 3 个：report1.txt, report2.txt, report3.txt）\n3. 统计所有文件中包含 \"ERROR\" 关键词的行数总和\n4. 统计所有文件中包含 \"WARNING\" 关键词的行数总和\n5. 输出 JSON 格式：{\"error_count\": 数量, \"warning_count\": 数量}\n\n注意：字段按字母顺序排列。",
+    "explanation": "测试 TAR.GZ 解压 + 多文件遍历 + 文本搜索 + 统计能力",
+    "files": ["files/reports.tar.gz"],
+    "level": 4,
+    "tools": ["zip_extract", "text_read_file", "code_execute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  }
+]

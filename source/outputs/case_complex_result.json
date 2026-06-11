@@ -1,0 +1,6 @@
+[
+  {
+    "id": "case_complex_001",
+    "answer": "[{\"supplier\": \"SupplierC\", \"total_cny\": 4500.0, \"total_usd\": 661.5, \"weighted_score\": 4275.0}, {\"supplier\": \"SupplierB\", \"total_cny\": 3500.25, \"total_usd\": 514.54, \"weighted_score\": 3080.22}, {\"supplier\": \"SupplierA\", \"total_cny\": 2391.25, \"total_usd\": 351.51, \"weighted_score\": 2199.95}]"
+  }
+]
