@@ -184,8 +184,73 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             )
 
     @register_tool(
+        name="resolve_path",
+        description="Resolve a file path relative to project root or question files directory. Returns absolute path.",
+        input_schema=object_schema(
+            {
+                "path": {
+                    "type": "string",
+                    "description": "File path to resolve (relative or absolute)",
+                },
+                "base_dir": {
+                    "type": "string",
+                    "description": "Base directory (default: project root)",
+                    "default": "",
+                },
+            },
+            ["path"],
+        ),
+        kind="mcp",
+        risk="low",
+    )
+    def resolve_path(path: str, base_dir: str = "") -> str:
+        """Resolve file path and return absolute path."""
+        p = Path(path)
+
+        # If already absolute and exists, return as-is
+        if p.is_absolute() and p.exists():
+            return json.dumps({"absolute_path": str(p), "exists": True}, ensure_ascii=False)
+
+        # Try relative to base_dir
+        if base_dir:
+            resolved = Path(base_dir) / p
+            if resolved.exists():
+                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
+
+        # Try relative to CWD
+        resolved = Path.cwd() / p
+        if resolved.exists():
+            return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
+
+        # Try relative to project root (parent of source/)
+        project_root = Path.cwd()
+        if (project_root / "source").exists():
+            resolved = project_root / p
+            if resolved.exists():
+                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
+
+        # Try relative to question files directory (source/examples/files/)
+        files_dir = project_root / "source" / "examples" / "files"
+        if files_dir.exists():
+            resolved = files_dir / p
+            if resolved.exists():
+                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
+
+        # Not found - return search paths for debugging
+        return json.dumps({
+            "absolute_path": None,
+            "exists": False,
+            "searched_paths": [
+                str(Path.cwd() / p),
+                str(project_root / p),
+                str(files_dir / p),
+            ],
+            "cwd": str(Path.cwd()),
+        }, ensure_ascii=False)
+
+    @register_tool(
         name="zip_extract",
-        description="Extract ZIP file contents. Returns list of extracted files.",
+        description="Extract ZIP file contents. Returns list of extracted files with inner ZIP detection.",
         input_schema=object_schema(
             {
                 "zip_path": {
