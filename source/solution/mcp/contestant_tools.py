@@ -204,7 +204,7 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         risk="medium",
     )
     def zip_extract(zip_path: str, output_dir: str = "") -> str:
-        """Extract ZIP file and return list of extracted files."""
+        """Extract ZIP file and return detailed file list."""
         zip_path = Path(zip_path)
         if not zip_path.exists():
             return json.dumps({"error": f"ZIP file not found: {zip_path}"}, ensure_ascii=False)
@@ -216,10 +216,16 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             output_dir.mkdir(parents=True, exist_ok=True)
 
         extracted = []
+        inner_zips = []
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(output_dir)
-                extracted = [str(Path(output_dir) / name) for name in zf.namelist()]
+                for name in zf.namelist():
+                    file_path = Path(output_dir) / name
+                    extracted.append(str(file_path))
+                    # Detect inner ZIP files
+                    if name.lower().endswith('.zip'):
+                        inner_zips.append(str(file_path))
         except zipfile.BadZipFile:
             return json.dumps({"error": f"Invalid ZIP file: {zip_path}"}, ensure_ascii=False)
         except Exception as exc:
@@ -230,6 +236,8 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
                 "output_dir": str(output_dir),
                 "files": extracted,
                 "count": len(extracted),
+                "inner_zips": inner_zips,
+                "has_inner_zip": len(inner_zips) > 0,
             },
             ensure_ascii=False,
             indent=2,

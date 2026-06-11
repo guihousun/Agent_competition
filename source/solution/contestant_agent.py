@@ -48,6 +48,15 @@ ested_archive.zip
    - 不要假设解压到当前目录
    - 不要尝试其他路径
 5. 路径拼接：使用正斜杠 / 或双反斜杠 \
+6. 嵌套 ZIP 处理：
+   - 如果 zip_extract 返回 has_inner_zip: true，必须处理内层 ZIP
+   - 对每个 inner_zips 中的文件，再次调用 zip_extract
+   - 重复直到 has_inner_zip: false
+   - 示例流程：
+     Thought: 发现内层 ZIP，需要继续解压
+     Action: zip_extract(zip_path=inner.zip)
+     Observation: 内层 ZIP 解压完成，没有更多内层 ZIP
+
    - ✓ output_dir/config.json
    - ✓ output_dir\config.json
    - ✗ output_dir\config.json（单反斜杠可能转义）
