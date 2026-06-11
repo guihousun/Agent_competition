@@ -124,7 +124,7 @@ class ContestantAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 8)
+        max_iter = env_int("AGENT_DEMO_MAX_ITER", 50)
         final_answer: str | None = None
         for step in range(1, max_iter + 1):
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")

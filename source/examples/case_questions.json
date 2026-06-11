@@ -1,0 +1,35 @@
+[
+  {
+    "id": "case_data_analysis_001",
+    "title": "数据分析 - 采购金额汇总",
+    "description": "请读取 files/procurement.csv 文件，计算所有采购订单的总金额（amount 列），输出 JSON 格式：{\"total_amount\": 数值, \"count\": 订单数, \"currency\": \"CNY\"}。注意：金额字段按字母顺序排列。",
+    "explanation": "测试 CSV 读取 + 数据聚合 + JSON 格式化输出能力",
+    "files": ["files/procurement.csv"],
+    "level": 2,
+    "tools": ["csv_read", "csv_aggregate", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  },
+  {
+    "id": "case_api_test_001",
+    "title": "接口验证 - 健康检查",
+    "description": "请调用 http_request 工具，向 http://httpbin.org/get 发送 GET 请求（timeout=10），提取响应中的 url 字段值作为答案。只输出 url 字段的值，不要输出完整 JSON。",
+    "explanation": "测试 HTTP 请求 + 字段提取 + 精确匹配输出能力",
+    "files": [],
+    "level": 2,
+    "tools": ["http_request", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  },
+  {
+    "id": "case_code_debug_001",
+    "title": "代码修复 - Python Bug",
+    "description": "以下 Python 代码有 bug，请修复并运行。代码：\n\ndef calculate_sum(numbers):\n    total = 0\n    for num in numbers:\n        total += num\n    return total\n\nresult = calculate_sum([1, 2, 3, 4, 5])\nprint(result)\n\n请运行修复后的代码，只输出运行结果的数字。",
+    "explanation": "测试代码执行 + 结果提取能力（此题代码实际无 bug，测试基本执行能力）",
+    "files": [],
+    "level": 1,
+    "tools": ["code_execute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  }
+]
