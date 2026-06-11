@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Data Analyzer Skill - Execution Script
-Analyzes tabular data (CSV/JSON) with aggregation, filtering, and statistics.
+Analyzes tabular data (CSV/JSON/Excel) with aggregation, filtering, and statistics.
 """
 
 import csv
@@ -9,6 +9,18 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+try:
+    import openpyxl
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
 
 def read_csv(path: str) -> list[dict]:
     """Read CSV file and return list of dictionaries."""
@@ -27,6 +39,30 @@ def read_json(path: str) -> list[dict]:
         else:
             return [data]
 
+def read_excel(path: str) -> list[dict]:
+    """Read Excel file and return list of dictionaries."""
+    if HAS_PANDAS:
+        df = pd.read_excel(path)
+        return df.to_dict('records')
+    elif HAS_OPENPYXL:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(h) for h in rows[0]]
+        result = []
+        for row in rows[1:]:
+            row_dict = {}
+            for i, value in enumerate(row):
+                if i < len(headers):
+                    row_dict[headers[i]] = value
+            result.append(row_dict)
+        wb.close()
+        return result
+    else:
+        raise ImportError("openpyxl or pandas is required for Excel support")
+
 def detect_format(path: str) -> str:
     """Detect file format based on extension."""
     ext = Path(path).suffix.lower()
@@ -34,8 +70,10 @@ def detect_format(path: str) -> str:
         return 'csv'
     elif ext in ['.json', '.ndjson']:
         return 'json'
+    elif ext in ['.xlsx', '.xls']:
+        return 'excel'
     else:
-        # Try CSV first, then JSON
+        # Try CSV first, then JSON, then Excel
         try:
             read_csv(path)
             return 'csv'
@@ -44,6 +82,12 @@ def detect_format(path: str) -> str:
                 read_json(path)
                 return 'json'
             except:
+                if HAS_OPENPYXL or HAS_PANDAS:
+                    try:
+                        read_excel(path)
+                        return 'excel'
+                    except:
+                        pass
                 raise ValueError(f"Unsupported file format: {ext}")
 
 def parse_numeric(value: str) -> float | None:
@@ -177,8 +221,14 @@ def main():
         fmt = detect_format(data_path)
         if fmt == 'csv':
             data = read_csv(data_path)
-        else:
+        elif fmt == 'json':
             data = read_json(data_path)
+        elif fmt == 'excel':
+            data = read_excel(data_path)
+        else:
+            result = {"error": f"Unsupported format: {fmt}"}
+            print(json.dumps(result, ensure_ascii=False))
+            return
     except Exception as e:
         result = {"error": f"Failed to read file: {str(e)}"}
         print(json.dumps(result, ensure_ascii=False))
