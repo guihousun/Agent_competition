@@ -1,0 +1,13 @@
+[
+  {
+    "id": "test_nested_zip_001",
+    "title": "嵌套压缩包处理测试",
+    "description": "请处理 files/outer.zip 文件：\n\n1. 解压 outer.zip\n2. 再解压里面的 inner.zip\n3. 读取所有 CSV 文件（data1.csv, data2.csv, data3.csv）\n4. 计算所有 amount 列的总和\n5. 统计总行数（不包括标题行）\n\n输出格式：{\"total_amount\": 数值, \"total_rows\": 数值}",
+    "explanation": "测试多层嵌套压缩包处理能力",
+    "files": ["files/outer.zip"],
+    "level": 4,
+    "tools": ["zip_extract", "tar_extract", "csv_read", "text_read_file", "code_execute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  }
+]
