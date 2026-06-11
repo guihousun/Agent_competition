@@ -1,0 +1,38 @@
+{
+  "name": "data_analyzer",
+  "description": "Analyze tabular data (CSV/JSON/Excel) with aggregation, filtering, and visualization. Supports pandas-based workflows for data cleaning, statistics, and reporting.",
+  "entrypoint": "scripts/run.py",
+  "timeout_seconds": 60,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "Analysis task: summarize, aggregate, filter, pivot, or visualize"
+      },
+      "data_path": {
+        "type": "string",
+        "description": "Path to data file (CSV, JSON, or Excel)"
+      },
+      "columns": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Columns to analyze"
+      },
+      "group_by": {
+        "type": "string",
+        "description": "Column to group by for aggregation"
+      },
+      "operation": {
+        "type": "string",
+        "description": "Aggregation operation: sum, avg, count, min, max"
+      },
+      "output_format": {
+        "type": "string",
+        "description": "Output format: json, csv, or text",
+        "default": "json"
+      }
+    },
+    "required": ["task", "data_path"]
+  }
+}
