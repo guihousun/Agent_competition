@@ -1,0 +1,6 @@
+[
+  {
+    "id": "test_nested_archive_001",
+    "answer": "{\"SupplierA\": 3000, \"SupplierB\": 3000, \"SupplierC\": 1500, \"total\": 7500}"
+  }
+]
