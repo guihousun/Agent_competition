@@ -1,0 +1,13 @@
+[
+  {
+    "id": "test_react_simple_001",
+    "title": "ReAct 框架测试 - 简单数据分析",
+    "description": "请使用 data_analyzer skill 分析 files/procurement.csv：\n\n1. 调用 skill_load 加载 data_analyzer\n2. 调用 skill_run，参数：\n   - task: \"count\"\n   - data_path: \"files/procurement.csv\"\n3. 输出总行数和列名\n\n输出格式：{\"rows\": 数量, \"columns\": [列名列表]}",
+    "explanation": "简单测试 ReAct 框架是否正常工作",
+    "files": ["files/procurement.csv"],
+    "level": 2,
+    "tools": ["skill_load", "skill_run", "answer_formatter"],
+    "skills": ["data_analyzer"],
+    "sub_agents": []
+  }
+]
