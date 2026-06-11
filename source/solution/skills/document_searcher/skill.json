@@ -1,0 +1,42 @@
+{
+  "name": "document_searcher",
+  "description": "Full-text search over large documents using SQLite FTS5. Supports PDF, DOCX, XLSX, CSV, PPTX, HTML, TXT, MD, and images (OCR). Ideal for multi-source knowledge retrieval tasks.",
+  "entrypoint": "scripts/run.py",
+  "timeout_seconds": 60,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "Action: index, search, get_section, overview, list, delete, stats"
+      },
+      "file_path": {
+        "type": "string",
+        "description": "Path to document file (for index action)"
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query (for search action)"
+      },
+      "doc_id": {
+        "type": "string",
+        "description": "Document ID (for get_section, overview, delete)"
+      },
+      "section_ref": {
+        "type": "string",
+        "description": "Section reference (for get_section)"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Max results (for search, list)",
+        "default": 10
+      },
+      "docs_dir": {
+        "type": "string",
+        "description": "Directory containing documents to index",
+        "default": "references/documents"
+      }
+    },
+    "required": ["action"]
+  }
+}
