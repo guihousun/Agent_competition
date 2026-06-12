@@ -294,7 +294,6 @@ class ContestantAgent:
         ]
 
         max_iter = env_int("AGENT_DEMO_MAX_ITER", 100)
-        final_answer: str | None = None
         for step in range(1, max_iter + 1):
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
             message = first_message(completion)
@@ -304,29 +303,15 @@ class ContestantAgent:
             messages.append(self._assistant_message_for_history(message))
             if not tool_calls:
                 if content.strip():
-                    # 自检：保存候选答案，多一轮验证
-                    if final_answer is None and step < max_iter - 1:
-                        final_answer = self._clean_final_answer(content)
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "自检：请验证上述答案是否满足题目要求。\n"
-                                "检查点：\n"
-                                "1. 是否直接回答了问题？\n"
-                                "2. 是否满足格式要求？\n"
-                                "3. 是否遗漏关键信息？\n"
-                                "如果发现问题，调用工具修正后输出新答案；"
-                                "如果确认无误，回复 VERIFIED。"
-                            ),
-                        })
-                        continue
-                    # 第二轮：LLM 回复 VERIFIED 或新答案
-                    if final_answer is not None:
-                        if "VERIFIED" in content.strip().upper():
-                            return final_answer
-                        # LLM 给出了修正后的答案
-                        return self._clean_final_answer(content)
-                    return self._clean_final_answer(content)
+                    candidate = self._clean_final_answer(content)
+                    # 强制流水线：候选答案 → answer_checker → 决定下一步
+                    return await self._verify_and_fix(
+                        candidate=candidate,
+                        messages=messages,
+                        client=client,
+                        tools=tools,
+                        context=context,
+                    )
                 messages.append({"role": "user", "content": "请输出最终答案文本。"})
                 continue
 
@@ -381,7 +366,10 @@ class ContestantAgent:
 
         messages.append({"role": "user", "content": "请停止调用工具，直接输出最终答案文本。"})
         completion = await client.create(messages=messages, tools=[], tool_choice="none")
-        return self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        candidate = self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        return await self._verify_and_fix(
+            candidate=candidate, messages=messages, client=client, tools=tools, context=context,
+        )
 
     async def _run_json_tool_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
         """Prompt-level JSON tool loop for gateways that reject native tools."""
@@ -579,13 +567,20 @@ class ContestantAgent:
         return None
 
     def _clean_final_answer(self, content: str) -> str:
+        # 去掉 <think> 标签及其内容
         cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        # 去掉可能残留的 <think> 或 </think> 标签
+        cleaned = re.sub(r'</?think>', '', cleaned).strip()
         # 去掉 VERIFIED 标记
         cleaned = re.sub(r'\bVERIFIED\b', '', cleaned).strip()
         # 去掉 ReAct 框架标签（弱模型会把这些输出到答案里）
         cleaned = re.sub(r'^(Thought|Action|Observation|Final Answer|Answer Checker|自检)[：:]\s*.*$', '', cleaned, flags=re.MULTILINE).strip()
         # 去掉 "Answer:" 前缀
         cleaned = re.sub(r'^(Answer|答案)[：:]\s*', '', cleaned).strip()
+
+        # 如果清理后为空，返回原始内容
+        if not cleaned:
+            return content.strip()
 
         # 如果最后一行是逗号分隔的值（无空格），只取最后一行
         lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
@@ -597,7 +592,104 @@ class ContestantAgent:
             # 如果最后一行是短文本（<200字），很可能是最终答案
             if len(last_line) < 200 and not any(kw in last_line for kw in ['Action:', 'Observation:', 'Thought:']):
                 return last_line
-        return cleaned or content.strip()
+        return cleaned
+
+    async def _verify_and_fix(
+        self,
+        *,
+        candidate: str,
+        messages: list[dict[str, Any]],
+        client: "ChatCompletionClient",
+        tools: list,
+        context: "AgentContext",
+    ) -> str:
+        """LangGraph-style verification pipeline:
+        1. Call answer_checker
+        2. If valid → return
+        3. If format-only issues → code-fix and return
+        4. If content/logic errors → send back to LLM for fix, loop
+        """
+        max_fix_rounds = env_int("AGENT_DEMO_MAX_ITER", 100)
+
+        for fix_round in range(max_fix_rounds):
+            # Call answer_checker
+            checker_result = await self._call_tool_as_text(
+                context, "agent_delegate",
+                {"agent_name": "answer_checker", "task": f"验证答案：{candidate}", "context_text": ""},
+            )
+
+            try:
+                checker = json.loads(checker_result)
+            except json.JSONDecodeError:
+                # Checker returned non-JSON, assume valid
+                return candidate
+
+            if checker.get("overall_valid", True):
+                return candidate
+
+            suggestions = checker.get("fix_suggestions", [])
+            if not suggestions:
+                return candidate
+
+            # Classify: format-only or content error?
+            format_keywords = ["格式", "format", "多余", "extra", "Thought", "解释", "VERIFIED",
+                               "排序", "sort", "去重", "dedup", "JSON", "字段顺序", "key order"]
+            is_format_only = all(
+                any(kw.lower() in s.lower() for kw in format_keywords)
+                for s in suggestions
+            )
+
+            if is_format_only:
+                # Format issues → code fix directly
+                fixed = candidate
+                for s in suggestions:
+                    if "Thought" in s or "解释" in s or "多余" in s or "extra" in s:
+                        fixed = self._clean_final_answer(fixed)
+                    if "排序" in s or "sort" in s:
+                        parts = [p.strip() for p in fixed.split(",") if p.strip()]
+                        fixed = ",".join(sorted(parts))
+                    if "VERIFIED" in s:
+                        fixed = re.sub(r'\bVERIFIED\b', '', fixed).strip()
+                return fixed
+
+            # Content/logic errors → send back to LLM for fix
+            fix_prompt = (
+                f"answer_checker 发现以下问题：\n"
+                + "\n".join(f"- {s}" for s in suggestions)
+                + f"\n\n当前答案：{candidate}\n\n"
+                "请根据建议修正答案，直接输出修正后的答案正文。"
+            )
+            messages.append({"role": "user", "content": fix_prompt})
+            completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
+            message = first_message(completion)
+            tool_calls = self._tool_calls_from_message(message)
+            content = str(message.get("content") or "")
+            messages.append(self._assistant_message_for_history(message))
+
+            if tool_calls:
+                for tool_call in tool_calls:
+                    tool_name = self._tool_call_name(tool_call)
+                    args_text = self._tool_call_arguments(tool_call)
+                    try:
+                        tool_args = json.loads(args_text)
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.get("id", ""),
+                        "name": tool_name,
+                        "content": tool_result[:12000],
+                    })
+                # After tool calls, get the next response
+                completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
+                message = first_message(completion)
+                content = str(message.get("content") or "")
+                messages.append(self._assistant_message_for_history(message))
+
+            candidate = self._clean_final_answer(content)
+
+        return candidate
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
         tool_calls = parsed.get("tool_calls")
