@@ -161,9 +161,14 @@ SYSTEM_PROMPT = """
       - 输出 JSON 数组，元素排序去重
       - ✓ ["A", "B", "C"]
       - ✗ ["C", "A", "B"]
-      -  ["A", "B", "B", "C"]
+      - ✗ ["A", "B", "B", "C"]
 
-   d) 数字答案：
+   d) 逗号分隔题：
+      - 只输出逗号分隔的值，不要表格、不要说明、不要"VERIFIED"
+      - ✓ PO-001,PO-002,PO-003
+      - ✗ | PO | 原因 |\n|---|---|\nPO-001,PO-002
+
+   e) 数字答案：
       - 不要单位，不要千分位
       - 保留题目要求的精度
       - ✓ 1234.56
@@ -269,7 +274,7 @@ class ContestantAgent:
                         continue
                     # 第二轮：LLM 回复 VERIFIED 或新答案
                     if final_answer is not None:
-                        if content.strip().upper() == "VERIFIED":
+                        if "VERIFIED" in content.strip().upper():
                             return final_answer
                         # LLM 给出了修正后的答案
                         return self._clean_final_answer(content)
@@ -495,6 +500,15 @@ class ContestantAgent:
 
     def _clean_final_answer(self, content: str) -> str:
         cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        # 去掉 VERIFIED 标记
+        cleaned = re.sub(r'\bVERIFIED\b', '', cleaned).strip()
+        # 如果最后一行是逗号分隔的值（无空格），只取最后一行
+        lines = cleaned.splitlines()
+        if lines:
+            last_line = lines[-1].strip()
+            # 检测纯逗号分隔格式（如 PO-001,PO-002,PO-003）
+            if re.match(r'^[A-Za-z0-9_\-]+(,[A-Za-z0-9_\-]+)+$', last_line):
+                return last_line
         return cleaned or content.strip()
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:

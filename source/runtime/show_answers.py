@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _load_results(path: Path) -> list[dict[str, Any]]:
