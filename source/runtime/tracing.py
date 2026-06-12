@@ -135,6 +135,8 @@ class QuestionTrace:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "title": self.title,
+            "description": self.description,
             "status": self.status,
             "answer": self.answer,
             "error": self.error,

@@ -43,8 +43,10 @@ class BatchRunner:
 
         for index, question in enumerate(questions, start=1):
             qid = str(question.get("id", index))
+            title = str(question.get("title", ""))
+            description = str(question.get("description", ""))
             print(f"[{index}/{len(questions)}] running question {qid}")
-            result = await self._run_one(question=public_question(question), question_dir=question_dir)
+            result = await self._run_one(question=public_question(question), question_dir=question_dir, title=title, description=description)
             results.append(result)
             write_results(output_path, results)
 
@@ -69,10 +71,8 @@ class BatchRunner:
 
         return results
 
-    async def _run_one(self, *, question: dict[str, Any], question_dir: Path) -> dict[str, Any]:
+    async def _run_one(self, *, question: dict[str, Any], question_dir: Path, title: str = "", description: str = "") -> dict[str, Any]:
         qid = str(question.get("id", "unknown"))
-        title = str(question.get("title", ""))
-        description = str(question.get("description", ""))
         trace = begin_question_trace(qid, title=title, description=description)
         try:
             with tempfile.TemporaryDirectory(prefix=f"agent_question_{qid}_") as temp_dir:
