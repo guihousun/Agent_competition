@@ -233,7 +233,7 @@ SQLite FTS5 全文搜索，BM25 排序，多文档索引。
 | 3_3 IDE 问答 | DB+API+推理 | 106s | 329k | 4.8k | ✅ |
 | 多模态图片 | 图片识别 | 3s | 16k | - | ✅ |
 
-**8/8 全部通过**。
+以上记录表示案例执行流程完成，不等同于官方答案全部正确；正式正确率必须与官方参考答案逐项比对。
 
 ---
 
@@ -258,7 +258,8 @@ SQLite FTS5 全文搜索，BM25 排序，多文档索引。
 | MODEL_API_KEY | - | API Key |
 | MODEL_NAME | - | 模型名称 |
 | AGENT_DEMO_MAX_ITER | 100 | 最大迭代次数 |
-| AGENT_DEMO_TIMEOUT_SECONDS | 120 | 超时时间 |
+| AGENT_DEMO_TIMEOUT_SECONDS | 300 | 模型请求超时时间 |
+| AGENT_DEMO_TOOL_OUTPUT_MAX_CHARS | 65536 | 单次工具结果写入模型历史的最大字符数 |
 | AGENT_DEMO_STREAM | false | 流式输出 |
 
 ---

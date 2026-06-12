@@ -933,8 +933,8 @@ function spanName(type, data) {
 function renderSummary(data) {
   const qs = data.questions || [];
   const total = qs.length;
-  const pass = qs.filter(q => q.status === 'success').length;
-  const fail = total - pass;
+  const completed = qs.filter(q => q.status === 'success').length;
+  const errors = total - completed;
   const totalTokens = qs.reduce((s, q) => s + (q.tokens?.prompt || 0) + (q.tokens?.completion || 0), 0);
   const totalMs = data.total_duration_ms || qs.reduce((s, q) => s + (q.duration_ms || 0), 0);
   const totalSpans = qs.reduce((s, q) => s + (q.spans?.length || 0), 0);
@@ -942,8 +942,8 @@ function renderSummary(data) {
   const grid = document.getElementById('summary-grid');
   grid.innerHTML = `
     <div class="summary-card"><div class="label">Questions</div><div class="value blue">${total}</div></div>
-    <div class="summary-card"><div class="label">Passed</div><div class="value green">${pass}</div></div>
-    <div class="summary-card"><div class="label">Failed</div><div class="value red">${fail}</div></div>
+    <div class="summary-card"><div class="label">Completed</div><div class="value green">${completed}</div></div>
+    <div class="summary-card"><div class="label">Errors</div><div class="value red">${errors}</div></div>
     <div class="summary-card"><div class="label">Total Spans</div><div class="value purple">${totalSpans}</div></div>
     <div class="summary-card"><div class="label">Tokens</div><div class="value orange">${fmtNum(totalTokens)}</div></div>
     <div class="summary-card"><div class="label">Duration</div><div class="value blue">${fmt(totalMs)}</div></div>
@@ -1063,7 +1063,7 @@ function renderQuestions(data) {
           <span class="qid">Q${i + 1}: ${escapeHtml(q.id)}</span>
           ${answerPreview ? `<div class="answer-preview">${escapeHtml(answerPreview)}</div>` : ''}
           <div class="meta">
-            <span class="status-badge ${q.status}">${q.status}</span>
+            <span class="status-badge ${q.status}">${q.status === 'success' ? 'completed' : q.status}</span>
             <span class="duration-badge">${fmt(q.duration_ms)}</span>
             ${totalT > 0 ? `<span class="token-badge">${fmtNum(totalT)} tok</span>` : ''}
           </div>

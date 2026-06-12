@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -26,8 +27,8 @@ class BatchRunner:
     def __init__(self) -> None:
         self.mcp = LocalMCPClient(agent_registry=AgentRegistry())
         load_dotenv()
-        config = ModelConfig.from_env()
-        self._run_trace = create_run_trace(model=config.model)
+        self._config = ModelConfig.from_env()
+        self._run_trace = create_run_trace(model=self._config.model)
 
     async def run_file(self, *, question_path: str | Path, output_path: str | Path) -> list[dict[str, Any]]:
         question_path = Path(question_path).resolve()
@@ -65,8 +66,13 @@ class BatchRunner:
         qid = str(question.get("id", "unknown"))
         trace = begin_question_trace(qid)
         try:
-            context = self._build_context(question=question, question_dir=question_dir)
-            answer = await ContestantAgent().solve(question=question, context=context)
+            with tempfile.TemporaryDirectory(prefix=f"agent_question_{qid}_") as temp_dir:
+                context = self._build_context(
+                    question=question,
+                    question_dir=question_dir,
+                    workspace_dir=Path(temp_dir),
+                )
+                answer = await ContestantAgent().solve(question=question, context=context)
             end_question_trace("success", str(answer))
             self._run_trace.add_question(trace)
             return {
@@ -87,9 +93,13 @@ class BatchRunner:
         *,
         question: dict[str, Any],
         question_dir: Path,
+        workspace_dir: Path,
     ) -> AgentContext:
         files = question.get("files") or []
-        allowed_file_paths = [(question_dir / path).resolve() for path in files]
+        allowed_file_paths = [
+            *((question_dir / path).resolve() for path in files),
+            workspace_dir.resolve(),
+        ]
         return AgentContext(
             question=question,
             question_dir=question_dir,
@@ -97,6 +107,8 @@ class BatchRunner:
             allowed_tools=self.mcp.tool_names(),
             allowed_agents=self.mcp.agent_names(),
             mcp=self.mcp,
+            workspace_dir=workspace_dir.resolve(),
+            package_id=self._config.package_id,
         )
 
 

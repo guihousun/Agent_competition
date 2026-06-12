@@ -12,6 +12,14 @@ from source.runtime.tracing import get_active_trace
 from source.runtime.context_compressor import should_compress, compress_messages, estimate_messages_tokens
 
 
+def tool_output_max_chars() -> int:
+    return env_int("AGENT_DEMO_TOOL_OUTPUT_MAX_CHARS", 65_536)
+
+
+def _tool_output_for_history(content: str) -> str:
+    return content[:tool_output_max_chars()]
+
+
 SYSTEM_PROMPT = """
 你是 skill 蒸馏攻防 Agent 大赛的参赛 Agent。
 
@@ -137,6 +145,11 @@ SYSTEM_PROMPT = """
 - 偏移计算：N天后/N周后/N小时后
 - 节日查询：儿童节/圣诞节/元旦/春节
 - 周次计算：第N周/N周后是几号
+
+调用 date_compute 时：
+- expression 必须传入题目中的完整原句，不能只截取“100小时后”“上周二”“第2周的周五”等片段
+- 原句包含具体小时、周次起点或相对日期锚点时，必须保留这些信息
+- base_date 只用于补充明确基准，不得替代原句中的时间和语义上下文
 
 必须调用 workday_calc 工具的场景：
 - "N 个工作日后"
@@ -276,13 +289,35 @@ class ContestantAgent:
 
         try:
             return await self._run_native_tool_loop(system_prompt=system_prompt, user_prompt=user_prompt, context=context)
-        except Exception:
-            if env_bool("AGENT_DEMO_JSON_TOOL_FALLBACK", True):
+        except Exception as exc:
+            if (
+                env_bool("AGENT_DEMO_JSON_TOOL_FALLBACK", True)
+                and self._is_native_tools_unsupported_error(exc)
+            ):
                 try:
                     return await self._run_json_tool_loop(system_prompt=system_prompt, user_prompt=user_prompt, context=context)
                 except Exception:
                     pass
             raise
+
+    def _is_native_tools_unsupported_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        tool_markers = (
+            "tools",
+            "tool_choice",
+            "function calling",
+            "function_call",
+        )
+        unsupported_markers = (
+            "unsupported",
+            "not supported",
+            "unknown parameter",
+            "unrecognized",
+            "invalid parameter",
+        )
+        return any(marker in text for marker in tool_markers) and any(
+            marker in text for marker in unsupported_markers
+        )
 
     async def _run_native_tool_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
         config = ModelConfig.from_env()
@@ -370,7 +405,7 @@ class ContestantAgent:
                             "role": "tool",
                             "tool_call_id": tool_call.get("id", ""),
                             "name": tool_name,
-                            "content": tool_result[:12000],
+                            "content": _tool_output_for_history(tool_result),
                         }
                     )
 
@@ -468,7 +503,7 @@ class ContestantAgent:
                         },
                         ensure_ascii=False,
                         indent=2,
-                    )[:16000],
+                    )[:tool_output_max_chars()],
                 }
             )
 
@@ -599,27 +634,41 @@ class ContestantAgent:
         3. If format-only issues → code-fix and return
         4. If content/logic errors → send back to LLM for fix, loop
         """
-        max_fix_rounds = env_int("AGENT_DEMO_MAX_ITER", 100)
+        max_fix_rounds = env_int("AGENT_DEMO_MAX_FIX_ROUNDS", 2)
+        verification_context = self._verification_context(messages)
 
         for fix_round in range(max_fix_rounds):
             # Call answer_checker — it validates AND cleans
             checker_result = await self._call_tool_as_text(
                 context, "agent_delegate",
-                {"agent_name": "answer_checker", "task": f"验证答案：{candidate}", "context_text": ""},
+                {
+                    "agent_name": "answer_checker",
+                    "task": candidate,
+                    "context_text": verification_context,
+                },
             )
 
             try:
                 checker = json.loads(checker_result)
-            except json.JSONDecodeError:
-                return candidate
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("answer_checker returned invalid JSON") from exc
 
             # Use cleaned_answer if available (checker strips Thought/Action/Observation)
             cleaned = checker.get("cleaned_answer", candidate)
+            overall_valid = checker.get("overall_valid")
+            if not isinstance(overall_valid, bool):
+                raise RuntimeError("answer_checker omitted boolean overall_valid")
 
-            if checker.get("overall_valid", True):
+            if overall_valid:
                 return cleaned
 
             suggestions = checker.get("fix_suggestions", [])
+            corrected = checker.get("corrected_answer")
+            if isinstance(corrected, str) and corrected.strip():
+                corrected = self._clean_final_answer(corrected)
+                if corrected != candidate:
+                    candidate = corrected
+                    continue
             if not suggestions:
                 return cleaned
 
@@ -629,14 +678,6 @@ class ContestantAgent:
                 + "\n".join(f"- {s}" for s in suggestions)
                 + f"\n\n当前答案：{cleaned}\n\n"
                 "请根据建议修正答案，直接输出修正后的答案正文。不要输出 Thought/Action/Observation。"
-            )
-
-            # Content/logic errors → send back to LLM for fix
-            fix_prompt = (
-                f"answer_checker 发现以下问题：\n"
-                + "\n".join(f"- {s}" for s in suggestions)
-                + f"\n\n当前答案：{candidate}\n\n"
-                "请根据建议修正答案，直接输出修正后的答案正文。"
             )
             messages.append({"role": "user", "content": fix_prompt})
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
@@ -658,7 +699,7 @@ class ContestantAgent:
                         "role": "tool",
                         "tool_call_id": tool_call.get("id", ""),
                         "name": tool_name,
-                        "content": tool_result[:12000],
+                        "content": _tool_output_for_history(tool_result),
                     })
                 # After tool calls, get the next response
                 completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
@@ -669,6 +710,19 @@ class ContestantAgent:
             candidate = self._clean_final_answer(content)
 
         return candidate
+
+    def _verification_context(self, messages: list[dict[str, Any]]) -> str:
+        evidence: list[str] = []
+        for message in reversed(messages):
+            if message.get("role") != "tool":
+                continue
+            tool_name = str(message.get("name") or "tool")
+            content = str(message.get("content") or "")
+            evidence.append(f"[{tool_name}]\n{content}")
+            if sum(len(item) for item in evidence) >= tool_output_max_chars():
+                break
+        evidence.reverse()
+        return _tool_output_for_history("\n\n".join(evidence))
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
         tool_calls = parsed.get("tool_calls")

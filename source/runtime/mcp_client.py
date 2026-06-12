@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import uuid
 
 from source.runtime.agent_registry import AgentRegistry
 from source.runtime.mcp_types import MCPTool
@@ -85,16 +86,39 @@ class LocalMCPClient:
             agent_name = str(args.get("agent_name", ""))
             if agent_name not in allowed_agents:
                 raise PermissionError(f"Agent is not allowed for this question: {agent_name}")
+            sub_agent_tools = await self.list_openai_tools(
+                allowed_tools=sorted(allowed_tools),
+                allowed_agents=[],
+            )
+
+            async def run_sub_agent_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
+                if tool_name == "agent_delegate":
+                    raise PermissionError("Sub-agents cannot recursively delegate to other agents.")
+                return await self.call_tool(
+                    tool_name,
+                    tool_args,
+                    runtime_context=runtime_context,
+                )
+
             return await self._agent_registry.run(
                 agent_name=agent_name,
                 task=str(args.get("task", "")),
                 context_text=str(args.get("context_text", "")),
+                runtime_context=runtime_context,
+                tools=sub_agent_tools,
+                tool_runner=run_sub_agent_tool,
             )
 
         if allowed_tools and name not in allowed_tools:
             raise PermissionError(f"Tool is not allowed for this question: {name}")
         if name not in self._tools:
             raise KeyError(f"Unknown tool: {name}")
+
+        if name == "http_request":
+            headers = dict(args.get("headers") or {})
+            if not any(key.lower() == "x-package-id" for key in headers):
+                headers["X-Package-Id"] = str(runtime_context.get("package_id") or "")
+            args["headers"] = headers
 
         # Resolve file paths for tools that read files
         path_keys = {
@@ -109,6 +133,15 @@ class LocalMCPClient:
             key = path_keys[name]
             if key in args:
                 args[key] = str(self._resolve_allowed_file(args[key], runtime_context))
+
+        if name in {"zip_extract", "tar_extract"}:
+            workspace_dir = Path(
+                runtime_context.get("workspace_dir") or runtime_context["question_dir"]
+            ).resolve()
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            output_dir = workspace_dir / f"{name}_{uuid.uuid4().hex[:12]}"
+            output_dir.mkdir(parents=True, exist_ok=False)
+            args["output_dir"] = str(output_dir)
 
         return await self._tools[name].call(args)
 

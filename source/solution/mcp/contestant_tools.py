@@ -4,6 +4,8 @@ import csv
 import io
 import json
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -14,6 +16,37 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
+
+
+def _safe_archive_target(output_root: Path, member_name: str) -> Path:
+    normalized = member_name.replace("\\", "/")
+    relative = Path(normalized)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe archive member: {member_name}")
+    target = (output_root / relative).resolve()
+    if target == output_root or not target.is_relative_to(output_root):
+        raise ValueError(f"Unsafe archive member: {member_name}")
+    return target
+
+
+def _java_main_class_name(code: str) -> str | None:
+    public_match = re.search(
+        r"\bpublic\s+(?:(?:final|abstract|strictfp)\s+)*class\s+([A-Za-z_$][\w$]*)",
+        code,
+    )
+    if public_match:
+        return public_match.group(1)
+
+    for class_match in re.finditer(
+        r"\bclass\s+([A-Za-z_$][\w$]*)",
+        code,
+    ):
+        class_body = code[class_match.end():]
+        if re.search(r"\bstatic\s+(?:public\s+)?void\s+main\s*\(", class_body):
+            return class_match.group(1)
+        if re.search(r"\bpublic\s+static\s+void\s+main\s*\(", class_body):
+            return class_match.group(1)
+    return None
 
 
 def register_tools(*, register_tool: Callable[..., Callable], object_schema: Callable[..., dict[str, Any]]) -> None:
@@ -218,8 +251,19 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         extracted = []
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(output_dir)
-                extracted = [str(Path(output_dir) / name) for name in zf.namelist()]
+                output_root = Path(output_dir).resolve()
+                for member in zf.infolist():
+                    target = _safe_archive_target(output_root, member.filename)
+                    mode = member.external_attr >> 16
+                    if stat.S_ISLNK(mode):
+                        raise ValueError(f"Unsafe archive member (link): {member.filename}")
+                    if member.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member, "r") as source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                    extracted.append(str(target))
         except zipfile.BadZipFile:
             return json.dumps({"error": f"Invalid ZIP file: {zip_path}"}, ensure_ascii=False)
         except Exception as exc:
@@ -270,8 +314,23 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         extracted = []
         try:
             with tarfile.open(tar_path, "r:*") as tf:
-                tf.extractall(output_dir)
-                extracted = [str(Path(output_dir) / name) for name in tf.getnames()]
+                output_root = Path(output_dir).resolve()
+                for member in tf.getmembers():
+                    target = _safe_archive_target(output_root, member.name)
+                    if member.issym() or member.islnk() or member.isdev():
+                        raise ValueError(f"Unsafe archive member (link/device): {member.name}")
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not member.isfile():
+                        raise ValueError(f"Unsafe archive member type: {member.name}")
+                    source = tf.extractfile(member)
+                    if source is None:
+                        raise ValueError(f"Could not read archive member: {member.name}")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                    extracted.append(str(target))
         except tarfile.TarError as exc:
             return json.dumps({"error": f"Invalid TAR file: {exc}"}, ensure_ascii=False)
         except Exception as exc:
@@ -442,6 +501,18 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
                     "description": "Standard input",
                     "default": "",
                 },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Command-line arguments passed to the program",
+                    "default": [],
+                },
+                "stdin_cases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional multiple stdin cases. Java is compiled once and run once per case.",
+                    "default": [],
+                },
                 "timeout": {
                     "type": "integer",
                     "description": "Execution timeout in seconds",
@@ -457,63 +528,137 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         language: str,
         code: str,
         stdin: str = "",
+        args: list[str] | None = None,
+        stdin_cases: list[str] | None = None,
         timeout: int = 30,
     ) -> str:
         """Execute code and return output."""
         language = language.lower()
+        args = [str(value) for value in (args or [])]
+        stdin_cases = [str(value) for value in (stdin_cases or [])]
 
         if language == "python":
-            cmd = [sys.executable, "-c", code]
+            cmd = [sys.executable, "-c", code, *args]
         elif language == "java":
-            # Write to temp file, compile, run
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".java", delete=False) as f:
-                f.write(code)
-                java_file = f.name
-            class_file = java_file.replace(".java", ".class")
-            try:
-                # Compile
-                compile_result = subprocess.run(
-                    ["javac", java_file],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                if compile_result.returncode != 0:
-                    return json.dumps(
-                        {
-                            "language": language,
-                            "exit_code": -1,
-                            "stdout": "",
-                            "stderr": compile_result.stderr,
-                            "error": "Compilation failed",
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                # Run
-                class_name = Path(java_file).stem
-                run_result = subprocess.run(
-                    ["java", "-cp", str(Path(java_file).parent), class_name],
-                    input=stdin,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
+            class_name = _java_main_class_name(code)
+            if not class_name:
                 return json.dumps(
                     {
                         "language": language,
-                        "exit_code": run_result.returncode,
-                        "stdout": run_result.stdout[:50000],
-                        "stderr": run_result.stderr[:10000],
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": "Could not identify a Java class containing main().",
+                        "error": "main class not found",
                     },
                     ensure_ascii=False,
                     indent=2,
                 )
-            finally:
-                Path(java_file).unlink(missing_ok=True)
-                Path(class_file).unlink(missing_ok=True)
+            try:
+                with tempfile.TemporaryDirectory(prefix="java_execute_") as temp_dir:
+                    java_file = Path(temp_dir) / f"{class_name}.java"
+                    java_file.write_text(code, encoding="utf-8")
+                    compile_result = subprocess.run(
+                        ["javac", "-encoding", "UTF-8", java_file.name],
+                        cwd=temp_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=timeout,
+                    )
+                    if compile_result.returncode != 0:
+                        return json.dumps(
+                            {
+                                "language": language,
+                                "exit_code": -1,
+                                "stdout": "",
+                                "stderr": compile_result.stderr,
+                                "error": "Compilation failed",
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    cases = stdin_cases if stdin_cases else [stdin]
+                    runs = []
+                    java_cmd = [
+                        "java",
+                        "-Dfile.encoding=UTF-8",
+                        "-Dsun.stdout.encoding=UTF-8",
+                        "-Dsun.stderr.encoding=UTF-8",
+                        "-cp",
+                        temp_dir,
+                        class_name,
+                        *args,
+                    ]
+                    for index, case_stdin in enumerate(cases):
+                        run_result = subprocess.run(
+                            java_cmd,
+                            input=case_stdin,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=timeout,
+                        )
+                        runs.append(
+                            {
+                                "index": index,
+                                "stdin": case_stdin,
+                                "args": args,
+                                "exit_code": run_result.returncode,
+                                "stdout": run_result.stdout[:50000],
+                                "stderr": run_result.stderr[:10000],
+                            }
+                        )
+                    if stdin_cases:
+                        return json.dumps(
+                            {
+                                "language": language,
+                                "class_name": class_name,
+                                "compile_exit_code": compile_result.returncode,
+                                "runs": runs,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    run_result = runs[0]
+                    return json.dumps(
+                        {
+                            "language": language,
+                            "class_name": class_name,
+                            "exit_code": run_result["exit_code"],
+                            "stdout": run_result["stdout"],
+                            "stderr": run_result["stderr"],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+            except subprocess.TimeoutExpired:
+                return json.dumps(
+                    {
+                        "language": language,
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": f"Execution timeout after {timeout}s",
+                        "error": "timeout",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            except Exception as exc:
+                return json.dumps(
+                    {
+                        "language": language,
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": str(exc),
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
         elif language == "node":
-            cmd = ["node", "-e", code]
+            cmd = ["node", "-e", code, *args]
         else:
             return json.dumps({"error": f"Unsupported language: {language}"}, ensure_ascii=False)
 
@@ -645,12 +790,12 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
 
     @register_tool(
         name="date_compute",
-        description="Parse natural language date expressions and compute target dates. Supports relative dates (tomorrow, last Thursday), offsets (3 days later), and weekday calculations.",
+        description="Parse a complete natural-language date sentence and compute its target date. Pass the full original sentence in expression so hours, calendar-week anchors, and fiscal-week starts are preserved.",
         input_schema=object_schema(
             {
                 "expression": {
                     "type": "string",
-                    "description": "Natural language date expression, e.g., '今天是2026年5月6日，明天是几号'",
+                    "description": "Complete original sentence, e.g. '今天是2026年5月6日，明天是几号'. Do not shorten away hours or week anchors.",
                 },
                 "base_date": {
                     "type": "string",
@@ -667,113 +812,213 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         """Parse natural language date expressions and compute target dates."""
         try:
             from datetime import datetime, timedelta
-            import re
+            full_date_pattern = re.compile(
+                r"(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})"
+            )
 
-            if not base_date:
-                base_date = "2026-05-06"
-            try:
-                base = datetime.strptime(base_date, "%Y-%m-%d")
-            except:
-                match = re.search(r"(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})", expression)
-                if match:
-                    base = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            def parse_datetime(year: int, month: int, day: int, start: int = 0) -> datetime:
+                tail = expression[start:]
+                hour_match = re.match(r"\s*(?:日)?\s*(\d{1,2})(?:点|时|[:.])", tail)
+                hour = int(hour_match.group(1)) if hour_match else 0
+                return datetime(year, month, day, hour)
+
+            explicit_dates = list(full_date_pattern.finditer(expression))
+            if base_date:
+                try:
+                    base = datetime.fromisoformat(base_date.strip())
+                except ValueError:
+                    base_match = full_date_pattern.search(base_date)
+                    if not base_match:
+                        raise
+                    base = datetime(
+                        int(base_match.group(1)),
+                        int(base_match.group(2)),
+                        int(base_match.group(3)),
+                    )
+            elif explicit_dates:
+                match = explicit_dates[0]
+                base = parse_datetime(
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                    match.end(),
+                )
+            else:
+                european = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", expression)
+                month_day = re.search(r"(\d{1,2})月(\d{1,2})日?", expression)
+                year = re.search(r"(20\d{2})年", expression)
+                if european:
+                    base = datetime(
+                        int(european.group(3)),
+                        int(european.group(2)),
+                        int(european.group(1)),
+                    )
+                elif month_day and year:
+                    base = datetime(
+                        int(year.group(1)),
+                        int(month_day.group(1)),
+                        int(month_day.group(2)),
+                    )
                 else:
-                    base = datetime(2026, 5, 6)
+                    base = datetime.now()
 
             exp_lower = expression.lower()
             result = None
+            weekday_numbers = {
+                "一": 0,
+                "二": 1,
+                "三": 2,
+                "四": 3,
+                "五": 4,
+                "六": 5,
+                "日": 6,
+                "天": 6,
+            }
 
-            # Chinese relative dates
-            if "明天" in expression or "明日" in expression:
-                result = base + timedelta(days=1)
-            elif "后天" in expression:
-                result = base + timedelta(days=2)
+            # A statement such as "下周一是 2026-05-11" identifies the
+            # current calendar week even though it does not state today's date.
+            if not base_date:
+                anchor = re.search(
+                    r"下周([一二三四五六日天])是\s*"
+                    + full_date_pattern.pattern,
+                    expression,
+                )
+                if anchor:
+                    known_weekday = weekday_numbers[anchor.group(1)]
+                    known_date = datetime(
+                        int(anchor.group(2)),
+                        int(anchor.group(3)),
+                        int(anchor.group(4)),
+                    )
+                    base = known_date - timedelta(days=7 + known_weekday)
+
+            fiscal_week = re.search(
+                r"财年第\s*(\d+)\s*周从\s*"
+                + full_date_pattern.pattern
+                + r".*?第\s*\1\s*周的周([一二三四五六日天])",
+                expression,
+            )
+            calendar_week_matches = list(
+                re.finditer(r"(上周|下周|本周|这周)(?:周)?([一二三四五六日天])", expression)
+            )
+            calendar_week = calendar_week_matches[-1] if calendar_week_matches else None
+            named_weekday = re.search(r"第\s*\d+\s*周的周([一二三四五六日天])", expression)
+            month_day_target = re.fullmatch(
+                r"\s*(\d{1,2})月(\d{1,2})日?\s*",
+                expression,
+            )
+
+            if fiscal_week:
+                week_start = datetime(
+                    int(fiscal_week.group(2)),
+                    int(fiscal_week.group(3)),
+                    int(fiscal_week.group(4)),
+                )
+                result = week_start + timedelta(
+                    days=weekday_numbers[fiscal_week.group(5)] - week_start.weekday()
+                )
+            elif named_weekday:
+                result = base + timedelta(
+                    days=weekday_numbers[named_weekday.group(1)] - base.weekday()
+                )
             elif "大后天" in expression:
                 result = base + timedelta(days=3)
-            elif "昨天" in expression or "昨日" in expression:
-                result = base - timedelta(days=1)
+            elif "后天" in expression:
+                result = base + timedelta(days=2)
+            elif "明天" in expression or "明日" in expression:
+                result = base + timedelta(days=1)
             elif "前天" in expression:
                 result = base - timedelta(days=2)
-            elif "上周四" in expression or "last thursday" in exp_lower:
-                days_back = (base.weekday() - 3) % 7
-                if days_back == 0:
-                    days_back = 7
-                result = base - timedelta(days=days_back)
-            elif "上周二" in expression or "last tuesday" in exp_lower:
-                days_back = (base.weekday() - 1) % 7
-                if days_back == 0:
-                    days_back = 7
-                result = base - timedelta(days=days_back)
-            elif "上周一" in expression or "last monday" in exp_lower:
-                days_back = base.weekday() % 7
-                if days_back == 0:
-                    days_back = 7
-                result = base - timedelta(days=days_back)
-            elif "下周二" in expression or "next tuesday" in exp_lower:
-                days_forward = 1 - base.weekday()
-                if days_forward <= 0:
-                    days_forward += 7
-                result = base + timedelta(days=days_forward)
-            elif "下周四" in expression or "next thursday" in exp_lower:
-                days_forward = 3 - base.weekday()
-                if days_forward <= 0:
-                    days_forward += 7
-                result = base + timedelta(days=days_forward)
+            elif "昨天" in expression or "昨日" in expression:
+                result = base - timedelta(days=1)
+            elif calendar_week:
+                week_offset = {"上周": -1, "本周": 0, "这周": 0, "下周": 1}[calendar_week.group(1)]
+                week_start = base - timedelta(days=base.weekday())
+                result = week_start + timedelta(
+                    weeks=week_offset,
+                    days=weekday_numbers[calendar_week.group(2)],
+                )
+            elif "last thursday" in exp_lower:
+                result = base - timedelta(days=base.weekday() + 4)
+            elif "last tuesday" in exp_lower:
+                result = base - timedelta(days=base.weekday() + 6)
+            elif "next tuesday" in exp_lower:
+                result = base + timedelta(days=(7 - base.weekday()) + 1)
+            elif "next thursday" in exp_lower:
+                result = base + timedelta(days=(7 - base.weekday()) + 3)
             elif "去年今天" in expression or "去年今日" in expression or "last year" in exp_lower:
-                result = base.replace(year=base.year - 1)
-            elif "两周后" in expression or "2周后" in expression:
-                result = base + timedelta(days=14)
-            elif "下周" in expression or "next week" in exp_lower:
-                result = base + timedelta(days=7)
-            elif "上周" in expression or "last week" in exp_lower:
-                result = base - timedelta(days=7)
-            elif re.search(r"(\d+)\s*小时", expression):
-                m = re.search(r"(\d+)\s*小时", expression)
-                result = base + timedelta(hours=int(m.group(1)))
-            elif re.search(r"(\d+)\s*天(?!后|前)", expression) or re.search(r"(\d+)\s*日后", expression):
-                m = re.search(r"(\d+)\s*天", expression)
-                result = base + timedelta(days=int(m.group(1)))
-            elif re.search(r"(\d+)\s*周", expression) or re.search(r"(\d+)\s*星期", expression):
-                m = re.search(r"(\d+)\s*(?:周|星期)", expression)
-                result = base + timedelta(weeks=int(m.group(1)))
-            elif re.search(r"(\d+)\s*月", expression):
-                m = re.search(r"(\d+)\s*月", expression)
-                new_month = base.month + int(m.group(1))
-                new_year = base.year + (new_month - 1) // 12
-                new_month = ((new_month - 1) % 12) + 1
-                result = base.replace(year=new_year, month=new_month)
+                try:
+                    result = base.replace(year=base.year - 1)
+                except ValueError:
+                    result = base.replace(year=base.year - 1, day=28)
+            elif "明年今天" in expression or "明年今日" in expression or "next year" in exp_lower:
+                try:
+                    result = base.replace(year=base.year + 1)
+                except ValueError:
+                    result = base.replace(year=base.year + 1, day=28)
+            elif re.search(r"(\d+)\s*个?\s*小时", expression):
+                hours = int(re.search(r"(\d+)\s*个?\s*小时", expression).group(1))
+                result = base + timedelta(hours=hours)
+            elif re.search(r"(\d+)\s*个?\s*自然日", expression):
+                days = int(re.search(r"(\d+)\s*个?\s*自然日", expression).group(1))
+                result = base + timedelta(days=days)
+            elif re.search(r"(\d+)\s*天\s*(?:后|之后|以后)", expression):
+                days = int(re.search(r"(\d+)\s*天\s*(?:后|之后|以后)", expression).group(1))
+                result = base + timedelta(days=days)
+            elif re.search(r"(\d+)\s*天\s*(?:前|之前|以前)", expression):
+                days = int(re.search(r"(\d+)\s*天\s*(?:前|之前|以前)", expression).group(1))
+                result = base - timedelta(days=days)
+            elif "两周后" in expression:
+                result = base + timedelta(weeks=2)
+            elif re.search(r"(\d+)\s*(?:周|星期)\s*(?:后|之后|以后)", expression):
+                weeks = int(
+                    re.search(r"(\d+)\s*(?:周|星期)\s*(?:后|之后|以后)", expression).group(1)
+                )
+                result = base + timedelta(weeks=weeks)
+            elif re.search(r"(\d+)\s*天", expression):
+                result = base + timedelta(days=int(re.search(r"(\d+)\s*天", expression).group(1)))
+            elif re.search(r"(\d+)\s*年后", expression):
+                years = int(re.search(r"(\d+)\s*年后", expression).group(1))
+                result = base.replace(year=base.year + years)
             elif "儿童节" in expression:
-                result = base.replace(month=6, day=1)
+                result = base.replace(month=6, day=1, hour=0)
             elif "圣诞节" in expression:
-                result = base.replace(month=12, day=25)
+                result = base.replace(month=12, day=25, hour=0)
             elif "元旦" in expression:
-                result = base.replace(month=1, day=1)
-            elif "圣诞节" in expression:
-                result = base.replace(month=12, day=25)
-            elif "今年的儿童节" in expression or "2026年的儿童节" in expression:
-                result = base.replace(month=6, day=1)
-            elif re.search(r"第\s*(\d+)\s*周", expression) and "财年" in expression:
-                m = re.search(r"第\s*(\d+)\s*周", expression)
-                week_num = int(m.group(1))
-                result = base + timedelta(weeks=week_num - 1)
-                days_to_friday = 4 - result.weekday()
-                if days_to_friday < 0:
-                    days_to_friday += 7
-                result = result + timedelta(days=days_to_friday)
-            elif re.search(r"从(\d{4})年(\d{1,2})月(\d{1,2})日", expression):
-                m = re.search(r"从(\d{4})年(\d{1,2})月(\d{1,2})日", expression)
-                from_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-                num_match = re.search(r"(\d+)\s*天后", expression)
-                if num_match:
-                    result = from_date + timedelta(days=int(num_match.group(1)))
-                else:
-                    result = from_date
+                result = base.replace(month=1, day=1, hour=0)
+            elif month_day_target:
+                result = base.replace(
+                    month=int(month_day_target.group(1)),
+                    day=int(month_day_target.group(2)),
+                    hour=0,
+                )
+            elif explicit_dates:
+                match = explicit_dates[-1]
+                result = parse_datetime(
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                    match.end(),
+                )
+                trailing_month_days = list(re.finditer(r"(\d{1,2})月(\d{1,2})日", expression))
+                if trailing_month_days and trailing_month_days[-1].start() > match.end():
+                    target = trailing_month_days[-1]
+                    result = result.replace(
+                        month=int(target.group(1)),
+                        day=int(target.group(2)),
+                        hour=0,
+                    )
             else:
-                match = re.search(r"(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})", expression)
-                if match:
-                    result = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                else:
-                    result = base
+                european = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", expression)
+                result = (
+                    datetime(
+                        int(european.group(3)),
+                        int(european.group(2)),
+                        int(european.group(1)),
+                    )
+                    if european
+                    else base
+                )
 
             if result:
                 weekdays = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]

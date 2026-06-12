@@ -3,5 +3,18 @@
   "description": "Answer verification sub-agent. Pass question + answer, get structured verification with fix suggestions. Uses LLM reasoning, not hardcoded rules.",
   "role": "answer verification specialist",
   "entrypoint": "scripts/run.py",
-  "timeout_seconds": 30
+  "timeout_seconds": 300,
+  "allowed_tools": [
+    "answer_formatter",
+    "code_execute",
+    "csv_aggregate",
+    "csv_read",
+    "date_compute",
+    "skill_load",
+    "skill_read_resource",
+    "skill_run",
+    "sql_query",
+    "text_read_file",
+    "workday_calc"
+  ]
 }

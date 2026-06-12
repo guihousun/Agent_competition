@@ -15,6 +15,8 @@ class AgentContext:
     allowed_tools: list[str]
     allowed_agents: list[str]
     mcp: LocalMCPClient
+    workspace_dir: Path | None = None
+    package_id: str = ""
 
     def is_tool_allowed(self, name: str) -> bool:
         return name == "agent_delegate" and bool(self.allowed_agents) or name in self.allowed_tools
@@ -40,9 +42,12 @@ class AgentContext:
             args or {},
             runtime_context={
                 "question_id": self.question.get("id"),
+                "question": self.question,
                 "question_dir": str(self.question_dir),
+                "workspace_dir": str(self.workspace_dir or self.question_dir),
                 "allowed_file_paths": [str(path) for path in self.allowed_file_paths],
                 "allowed_tools": self.allowed_tools,
                 "allowed_agents": self.allowed_agents,
+                "package_id": self.package_id,
             },
         )
