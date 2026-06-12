@@ -1,42 +1,33 @@
 # Answer Checker Sub-agent
 
-专门用于答案验证的 Sub-agent。
+Prompt 驱动的答案验证 Sub-agent。不依赖硬编码规则，由 LLM 推理验证答案是否满足题目要求。
 
 ## 职责
 
-1. **格式检查**：确保答案符合题目要求
-2. **日期验证**：验证日期计算是否正确
-3. **JSON 验证**：检查 JSON 格式和字段顺序
-4. **列表验证**：检查排序和去重
+接收题目描述 + 待验证答案，返回结构化验证结果和修改建议。
 
 ## 使用方式
-
-在主 Agent 的自检阶段调用：
 
 ```python
 agent_delegate(
     agent_name="answer_checker",
-    task="Check if the answer matches the required format",
-    context_text="Question: ... Answer: ..."
+    task="题目描述 + 你的答案",
+    context_text="工具返回的原始结果"
 )
 ```
 
-## 检查规则
+## 输出格式
 
-### 1. 格式规则
+```json
+{
+  "overall_valid": true/false,
+  "fix_suggestions": ["具体修改建议"],
+  "summary": "一句话总结"
+}
+```
 
-- 精确匹配：无多余文字
-- JSON 字段匹配：按字母顺序
-- 列表匹配：排序去重
+## 设计原则
 
-### 2. 日期计算规则
-
-- "下周二" = base_date + (1 - base_date.weekday()) % 7
-- "上周四" = base_date - (base_date.weekday() - 3) % 7
-- 工作日计算：跳过周末
-
-### 3. 常见错误
-
-- LLM 心算日期（应使用工具）
-- JSON 字段顺序错误
-- 列表包含重复元素
+- **不写死规则**：格式类型、日期表达式、字段名称等不做硬编码匹配
+- **LLM 推理**：由模型理解题目要求并判断答案是否符合
+- **泛化能力**：适用于任意题型，不依赖预定义的检查模式

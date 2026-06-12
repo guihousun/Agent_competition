@@ -1,6 +1,6 @@
 {
   "name": "answer_checker",
-  "description": "Specialized sub-agent for answer verification. Checks format compliance, date calculations, and output correctness.",
+  "description": "Answer verification sub-agent. Pass question + answer, get structured verification with fix suggestions. Uses LLM reasoning, not hardcoded rules.",
   "role": "answer verification specialist",
   "entrypoint": "scripts/run.py",
   "timeout_seconds": 30
