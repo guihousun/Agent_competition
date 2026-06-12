@@ -1,58 +1,31 @@
 # Agent Contest Python Demo - Requirements
-# ============================================================
-# Python version requirement
-# ============================================================
-# This project requires Python 3.11.0+
-# Install: https://www.python.org/downloads/release/python-3110/
-# Do NOT use conda - use official Python installer or pyenv
-
-python>=3.11.0
+# Python 3.11.0+ required (not a pip package — install via system package manager)
 
 # ============================================================
-# Runtime Dependencies
+# Core Dependencies
 # ============================================================
-# Core dependencies for data analysis and Excel support:
-
-openpyxl>=3.1.0          # Excel (.xlsx) read/write
-pandas>=2.0.0            # Data analysis and manipulation
-numpy>=1.24.0            # Numerical computing (pandas dependency)
-
-# Standard library modules also used:
-#   - csv, io, json, re, subprocess, sys, tempfile, time
-#   - urllib.error, urllib.parse, urllib.request
-#   - zipfile, tarfile
-#   - pathlib, contextvars, dataclasses
-#   - http.client (for fallback HTTP)
-#   - asyncio (for async runtime)
+openpyxl>=3.1.0            # Excel (.xlsx) read/write
+pandas>=2.0.0              # Data analysis (includes numpy)
 
 # ============================================================
-# Optional Dependencies
+# Document Parsing
 # ============================================================
-
-# For MCP server mode (not required for contest runtime)
-# fastmcp>=0.5.0
-
-# For visualization (optional)
-# matplotlib>=3.7.0
-# seaborn>=0.12.0
-
-# For development/testing (not required for contest)
-# pytest>=7.0.0
-# pytest-asyncio>=0.21.0
+python-docx>=1.1.0         # Word (.docx)
+python-pptx>=0.6.23        # PowerPoint (.pptx)
+pdfplumber>=0.11.0         # PDF text extraction
+beautifulsoup4>=4.12.0     # HTML/XML parsing
+Pillow>=10.0.0             # Image processing
 
 # ============================================================
-# Installation
+# OCR (optional — requires system Tesseract + Poppler)
 # ============================================================
-# 1. Install Python 3.11.0+ from https://www.python.org/downloads/
-# 2. (Optional) Create virtual environment:
-#    python -m venv .venv
-#    .venv\Scripts\activate  (Windows)
-#    source .venv/bin/activate  (Linux/Mac)
-# 3. Install dependencies:
-#    pip install -r requirements.txt
-#
+# pytesseract>=0.3.10      # Tesseract OCR wrapper
+# pdf2image>=1.16.0        # PDF to image (needs Poppler)
+
 # ============================================================
-# Verification
+# System Dependencies (not pip-installable)
 # ============================================================
-# Run this to verify your setup:
-#   python -c "import csv, json, openpyxl, pandas; print('OK')"
+# Java JDK — for code_execute Java support
+# Node.js — for code_execute JavaScript support
+# Tesseract OCR — for image text extraction (apt install tesseract-ocr)
+# Poppler — for PDF OCR (apt install poppler-utils)
