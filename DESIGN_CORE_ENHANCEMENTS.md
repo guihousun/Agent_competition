@@ -1,216 +1,269 @@
-# Agent Contest - 核心能力增强设计文档
+# Agent Contest - 核心能力设计文档
 
-**版本**: 2.0  
-**日期**: 2026-06-12  
+**版本**: 4.0
+**日期**: 2026-06-12
 **状态**: 已实施
 
 ---
 
-## 1. 背景与动机
+## 1. 架构总览
 
-### 1.1 比赛评分机制
-
-比赛答案检查有 **4 种严格匹配类型**：
-
-| 匹配类型 | 要求 | 偏差后果 |
-|----------|------|----------|
-| **精确匹配** | 字符级完全一致 | 多一个空格 = 零分 |
-| **精确字段匹配** | JSON 字段名和值必须精确 | 字段顺序错 = 零分 |
-| **列表精确匹配** | 列表元素完全一致 | 顺序错/有重复 = 零分 |
-| **部分匹配** | 包含关键内容即可 | 相对宽松 |
-
-**核心痛点**：LLM 生成的答案格式不稳定，即使"答对"也可能因格式问题得零分。
-
-### 1.2 调研结论（2026-06）
-
-基于 4 个并行调研 agent 的发现：
-
-| 调研方向 | 关键发现 | 我们的决策 |
-|----------|----------|------------|
-| Self-iteration | Reflect-and-Retry 模式最优 | 加自检步骤到现有循环 |
-| Answer formatting | Format-first design + RFC 8785 JCS | answer_formatter 工具 + System Prompt |
-| MCP ecosystem | 官方 servers 可复用，但需包装 | 暂不集成，优先自有工具 |
-| Skill design | SWE-Skills-Bench: 80% skill 零提升 | 聚焦核心能力 |
+```
+main.py → BatchRunner
+  ├── LocalMCPClient (工具调度 + 权限沙箱 + 路径解析)
+  │     ├── 5 框架工具 (text_read_file, skill_*, agent_delegate)
+  │     ├── 12 参赛工具 (csv, http, code, date, sql, image, formatter...)
+  │     ├── 3 Skills (data_analyzer, document_searcher, huawei_coding_standard)
+  │     └── 2 Sub-agents (answer_checker, data_reader)
+  │
+  ├── ContestantAgent (Plan → Execute → Verify)
+  │     ├── Phase 1: 规划（内部推理，不输出）
+  │     ├── Phase 2: 执行（工具调用）
+  │     ├── Phase 3: 验证（answer_checker 清理 + 校验）
+  │     └── Context Compression（自动 hook，LLM 摘要）
+  │
+  ├── Tracing (ContextVar, 零开销)
+  └── Dashboard (单文件 HTML)
+```
 
 ---
 
-## 2. 核心改动
+## 2. 核心流程
 
-### 2.1 改动 1: `answer_formatter` 工具
+### 2.1 Plan → Execute → Verify 框架
 
-**目标**：确定性格式化答案，不依赖 LLM。
+**Phase 1: 规划**（内部，不输出）
+- 题目类型判断（日期/API/代码/数据/审计/问答）
+- 文件识别 + 数据量评估
+- 执行步骤拆解
+- 预期答案格式
 
-**位置**：`source/solution/mcp/contestant_tools.py`
+**Phase 2: 执行**
+- 按步骤调用工具
+- 大文件先用 data_reader 预读
+- 结果存入上下文
 
-**6 种 format_type**：
-- `exact` - 去空白
-- `json_canonical` - JSON 字段排序
-- `list_canonical` - 列表排序去重
-- `number` - 数字精度
-- `field_extract` - 字段提取
-- `regex_extract` - 正则提取
-
-**实现**：纯 Python，try-except 降级到原文
-
-### 2.2 改动 2: System Prompt 强化（ReAct 框架）
-
-**目标**：在生成阶段预防格式错误 + 结构化推理。
-
-**位置**：`source/solution/contestant_agent.py` → `SYSTEM_PROMPT`
-
-**ReAct 流程**：
+**Phase 3: 验证**（LangGraph 风格流水线）
 ```
-Thought → Action → Observation → 重复 → Answer
+候选答案 → answer_checker →
+  ├─ overall_valid=true → 返回 cleaned_answer
+  ├─ 格式问题 → 代码直接修复
+  └─ 内容/逻辑错误 → 返回主循环修正（无上限）
 ```
 
-**关键原则**：
-- 每次只调用一个工具
-- 不重复调用相同参数
-- 使用声明的文件路径
-- 失败时分析原因
+### 2.2 answer_checker（验证 + 清理器）
 
-### 2.3 改动 3: 自检循环
+**双重职责**：
+1. **验证**：检查答案是否满足题目要求（格式、内容、排序、数值）
+2. **清理**：从答案中去掉 Thought/Action/Observation 等推理文字
 
-**目标**：在返回答案前自动验证质量。
+**返回格式**：
+```json
+{
+  "overall_valid": true/false,
+  "cleaned_answer": "清理后的纯净答案",
+  "fix_suggestions": ["修改建议"],
+  "summary": "一句话总结"
+}
+```
 
-**位置**：`source/solution/contestant_agent.py` → `_run_native_tool_loop()`
+**设计原则**：主 agent 可以自由输出推理过程，answer_checker 统一负责清理。
 
-**逻辑**：
+### 2.3 data_reader（数据接口层）
+
+**两阶段设计**：
+
+阶段 1: `mode="overview"`（不做筛选）
+```
+→ 返回 schema、行数、字段、值域、关联、数据问题
+→ 主 agent 基于全貌决定查什么
+```
+
+阶段 2: `mode="query"`（精确执行）
+```
+→ 主 agent 指定查询条件
+→ data_reader 执行并返回结果（≤50 条）
+```
+
+**设计原则**：不猜、不筛、不假设——只负责"读"和"查"。
+
+---
+
+## 3. 工具体系（17 个）
+
+### 3.1 框架工具（5 个）
+
+| 工具 | 用途 |
+|------|------|
+| text_read_file | 读取小文件（<50 行） |
+| skill_load | 加载 skill 说明 |
+| skill_run | 执行 skill |
+| skill_read_resource | 读取 skill 资源 |
+| agent_delegate | 调用子代理 |
+
+### 3.2 参赛工具（12 个）
+
+| 工具 | 用途 |
+|------|------|
+| csv_read | 读取 CSV（支持路径解析） |
+| csv_aggregate | CSV 聚合（SUM/AVG/COUNT/MIN/MAX） |
+| code_execute | 执行 Python/Java/Node.js |
+| http_request | HTTP 请求 |
+| sql_query | SQLite 查询（SELECT only） |
+| date_compute | 自然语言日期解析 |
+| workday_calc | 工作日计算 |
+| image_read | 图片读取（返回 base64） |
+| answer_formatter | 答案格式化（6 种模式） |
+| zip_extract | ZIP 解压 |
+| tar_extract | TAR 解压 |
+| mock_order_lookup | Mock 订单查询 |
+
+### 3.3 路径解析
+
+所有文件读取工具统一经过 `_resolve_allowed_file()`：
+- 相对路径 → 基于 question_dir 解析
+- 权限检查 → 只允许题目声明的文件
+- 支持工具：text_read_file, csv_read, sql_query, zip_extract, tar_extract, image_read
+
+---
+
+## 4. 多模态支持
+
+### 4.1 image_read 工具
+
+```
+读取图片 → 返回 base64 + __image__ 标记
+         → Agent loop 检测标记
+         → 注入 image_url 到下一轮 LLM 消息
+         → LLM 直接"看到"图片
+```
+
+**支持格式**：PNG, JPG, JPEG, BMP, GIF, WebP
+**大小限制**：10MB
+
+### 4.2 消息注入
+
 ```python
-if not tool_calls:
-    if content.strip():
-        # 多一轮验证
-        if step < max_iter - 1:
-            final_answer = content  # 保存候选
-            messages.append({"role": "user", "content": "自检：..."})
-            continue
-        # 第二轮：LLM 回复 VERIFIED 或新答案
-        if content.upper() == "VERIFIED":
-            return final_answer
-        return self._clean_final_answer(content)
+if img_data.get("__image__"):
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ],
+    })
 ```
 
-**配置**：
-- `AGENT_DEMO_MAX_ITER=8`（默认）
-- `AGENT_DEMO_TIMEOUT_SECONDS=600`（10 分钟）
-- `AGENT_DEMO_STREAM=true`（流式输出）
+---
+
+## 5. 上下文压缩
+
+### 5.1 触发条件
+
+- 估计 token > 200k 时自动触发
+- 每次 LLM 调用前检查（自动 hook，主 agent 无感）
+
+### 5.2 压缩策略
+
+**保留**：system prompt + 最近 10 轮消息
+
+**压缩**：旧消息 → LLM 生成详细摘要
+- 保留每步操作结果
+- 保留所有关键数据（ID、数值、状态）
+- 保留工具返回的重要内容
+- 保留已做出的决策
+- 丢弃：重复内容、工具调用参数、失败重试中间步骤
+
+**降级**：LLM 调用失败时，规则截断（保留前 2000 字符）
+
+### 5.3 参数
+
+| 参数 | 值 | 说明 |
+|------|------|------|
+| 触发阈值 | 200k token | 估计值 |
+| 保留最近 | 10 轮 | 不压缩 |
+| 目标 token | 150k | 压缩后 |
+| 单条消息 | 2000 字符 | 传给 LLM |
+| 总上下文 | 50k 字符 | 传给 LLM |
 
 ---
 
-## 3. Skills 体系
+## 6. Skills
 
-### 3.1 `data_analyzer`（自建）
+### 6.1 data_analyzer（自建）
 
-**来源**：基于比赛需求自建  
-**位置**：`source/solution/skills/data_analyzer/`
+CSV/JSON/Excel 多格式数据分析，支持聚合、筛选、汇总。
 
-**能力**：
-- CSV/JSON/Excel 多格式
-- 智能聚合（SUM/AVG/COUNT/MIN/MAX）
-- 自动格式检测
-- 纯标准库实现（无 pandas 依赖）
+### 6.2 document_searcher（集成）
 
-### 3.2 `document_searcher`（集成）
+SQLite FTS5 全文搜索，BM25 排序，多文档索引。
 
-**来源**：[Ansvar-Systems/Document-Index-MCP](https://github.com/Ansvar-Systems/Document-Index-MCP) (Apache-2.0)  
-**位置**：`source/solution/skills/document_searcher/`
+### 6.3 huawei_coding_standard（自建）
 
-**能力**：
-- SQLite FTS5 全文搜索
-- BM25 排序
-- 多文档索引
-- 章节级检索
-
-**适配**：
-- 复制核心模块（fts.py, database.py, parsers/）
-- 简化为同步接口
-- 适配 stdin/stdout 协议
-
-### 3.3 `mock_summary_skill`（示例）
-
-**来源**：demo 内置  
-**能力**：返回 mock 数据
+华为编程规范查询，references/ 目录放规范文档，agent 通过 skill_read_resource 读取。
 
 ---
 
-## 4. Dashboard 系统
+## 7. Dashboard
 
-### 4.1 追踪系统
+### 7.1 追踪系统
 
-**位置**：`source/runtime/tracing.py`
+- `ContextVar` 传播（async 安全，零开销）
+- `QuestionTrace` 收集 spans（llm_call / tool_call）
+- Token 统计（prompt / completion）
 
-**机制**：
-- `ContextVar` 传播
-- `QuestionTrace` 收集 spans
-- 每个 span 包含：类型、参数、结果、耗时
+### 7.2 Dashboard 生成
 
-### 4.2 Dashboard 生成
-
-**位置**：`source/runtime/generate_dashboard.py`
-
-**特性**：
-- 自包含 HTML（嵌入数据）
+- 自包含 HTML（嵌入 traces.json）
 - 暗色主题（LangSmith 风格）
-- 4 个区域：Summary / Timeline / Questions / Capabilities
-- 答案预览（80 字符）直接显示在 header
+- Summary Cards / Waterfall Timeline / Question Details / Agent Capabilities
 
 ---
 
-## 5. 测试验证
+## 8. 测试结果
 
-### 5.1 测试结果
+| 题目 | 类型 | 耗时 | Prompt | Completion | 状态 |
+|------|------|------|--------|------------|------|
+| Mock 5 题 | 基础 | <10s | - | - | ✅ 5/5 全对 |
+| 1_1 日期提取 | 文本+日期 | 30s | 31k | 1.7k | ✅ |
+| 1_4 接口测试 | API 验证 | 67s | 395k | 2.1k | ✅ |
+| 2_2 敏感扫描 | 压缩包+正则 | 35s | - | - | ✅ |
+| 2_3 Java 修复 | 代码调试 | 63s | 93k | 3k | ✅ |
+| 3_2 PO 审计 | 数据+合规 | 52s | 463k | 1.2k | ✅ |
+| 3_3 IDE 问答 | DB+API+推理 | 106s | 329k | 4.8k | ✅ |
+| 多模态图片 | 图片识别 | 3s | 16k | - | ✅ |
 
-| 测试 | 状态 | 耗时 |
-|------|------|------|
-| Mock 5 题 | ✅ 5/5 | 44.8s |
-| 数据分析 3 题 | ✅ 3/3 | 52.2s |
-| 复杂任务 1 题 | ✅ 1/1 | 97.2s |
-| 压缩包 2 题 | ✅ 2/2 | 101.7s |
-| Excel/CSV 2 题 | ✅ 2/2 | 104.2s |
-| 嵌套 ZIP 1 题 | ✅ 1/1 | 41.8s |
-| ReAct 简单测试 | ✅ 1/1 | 26.9s |
-| 真实比赛题 1_1 | ✅ 1/1 | ~120s |
-
-### 5.2 比赛覆盖
-
-| 题目 | 覆盖 | 工具 |
-|------|------|------|
-| 1_1 日期提取 | ✅ | text_read_file + code_execute |
-| 2_2 敏感扫描 | ✅ | zip_extract + tar_extract + code_execute |
-| 2_3 Java 修复 | ✅ | code_execute |
-| 2_1 数据清洗 | ✅ | csv_read + csv_aggregate + code_execute |
-| 1_4 接口测试 | ⚠️ | http_request（需本地服务） |
-| 3_3 IDE 问答 | ⚠️ | document_searcher + http_request（需服务） |
+**8/8 全部通过**。
 
 ---
 
-## 6. 已知问题
+## 9. 关键优化效果
 
-1. **路径解析**：Agent 容易尝试多种路径，System Prompt 已强化
-2. **重复调用**：ReAct 框架已部分缓解
-3. **超时控制**：复杂任务可能超过 10 分钟
-4. **格式验证**：answer_formatter 作为兜底
-
----
-
-## 7. 下一步
-
-### 短期
-- 测试更多真实比赛题
-- 优化 System Prompt 减少重复调用
-- 添加多源知识检索 Skill
-
-### 长期
-- 多模态图片理解
-- 并行工具调用
-- 长期记忆管理
+| 优化项 | 之前 | 之后 | 效果 |
+|--------|------|------|------|
+| Completion tokens | 33k | 1.2k | -96% |
+| PO 审计耗时 | 300s | 52s | -83% |
+| 上下文膨胀 | 158 万 token | 46 万 | -71% |
+| answer_checker | 硬编码脚本 | LLM 推理 | 泛化 |
+| 数据读取 | 全文塞入 | data_reader 预读 | 隔离 |
+| 压缩策略 | 无 | LLM 摘要 | 自动 |
 
 ---
 
-## 8. 参考文档
+## 10. 配置
 
-- [README.md](README.md) - 项目总览
-- [GUIDE.md](GUIDE.md) - 使用指南
-- [CAPABILITY_GAP.md](CAPABILITY_GAP.md) - 能力差距
-- [P0_TOOLS.md](P0_TOOLS.md) - P0 工具文档
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| MODEL_BASE_URL | - | 模型 API 地址 |
+| MODEL_API_KEY | - | API Key |
+| MODEL_NAME | - | 模型名称 |
+| AGENT_DEMO_MAX_ITER | 100 | 最大迭代次数 |
+| AGENT_DEMO_TIMEOUT_SECONDS | 120 | 超时时间 |
+| AGENT_DEMO_STREAM | false | 流式输出 |
+
+---
+
+## 11. 参考
+
 - [GitHub](https://github.com/guihousun/Agent_competition)
+- [Dashboard 教程](docs/dashboard_tutorial.md)
