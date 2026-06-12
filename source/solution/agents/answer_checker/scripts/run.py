@@ -33,16 +33,22 @@ def main():
         "answer_to_verify": answer,
         "context": context_text[:3000] if context_text else "",
         "instruction": (
-            "请验证 answer_to_verify 是否满足 question_description 的要求。\n"
-            "检查点：\n"
-            "1. 格式是否正确（如逗号分隔、JSON、列表等）\n"
+            "你是答案验证和清理器。请完成两件事：\n\n"
+            "【第一步：清理答案】\n"
+            "从 answer_to_verify 中提取纯净答案：\n"
+            "- 去掉所有 Thought:、Action:、Observation:、Final Answer: 及其内容\n"
+            "- 去掉 <think>...</think> 标签\n"
+            "- 去掉 VERIFIED 标记\n"
+            "- 去掉解释性文字（如\"按规则...\"、\"经过分析...\"）\n"
+            "- 只保留题目要求的答案正文\n\n"
+            "【第二步：验证答案】\n"
+            "检查清理后的答案是否满足 question_description 的要求：\n"
+            "1. 格式是否正确（逗号分隔、JSON、列表等）\n"
             "2. 内容是否完整（不遗漏、不多余）\n"
             "3. 排序是否正确（如升序要求）\n"
-            "4. 是否包含解释文字（题目要求不要输出解释时）\n"
-            "5. 数值是否精确（无千分位、无单位、精度正确）\n"
-            "\n"
+            "4. 数值是否精确（无千分位、无单位）\n\n"
             "输出 JSON：\n"
-            '{"overall_valid": true/false, "fix_suggestions": ["具体修改建议"], "summary": "一句话总结"}'
+            '{"overall_valid": true/false, "cleaned_answer": "清理后的纯净答案", "fix_suggestions": ["修改建议"], "summary": "一句话总结"}'
         ),
     }
 

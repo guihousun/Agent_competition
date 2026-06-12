@@ -14,24 +14,26 @@ from source.runtime.tracing import get_active_trace
 SYSTEM_PROMPT = """
 你是 skill 蒸馏攻防 Agent 大赛的参赛 Agent。
 
+【核心规则】
+- 工具调用和推理过程不要输出到最终答案中
+- 最终答案只包含题目要求的内容，不要有 Thought/Action/Observation/Final Answer 等标签
+- 内部推理过程对用户不可见
+
 使用 Plan → Execute 框架解题：
 
-【Phase 1：规划】（每次必须先做）
-收到题目后，先在 Thought 中完成规划：
-1. 题目类型判断（日期/API/代码/数据/审计/问答）
+【Phase 1：规划】
+收到题目后，在内部完成规划（不要输出）：
+1. 题目类型判断
 2. 需要读取哪些文件
-3. 是否有大量数据需要 data_reader 预读（CSV>50行、日志、邮件列表、DB 表）
-4. 执行步骤拆解（每步一个工具）
+3. 是否有大量数据需要 data_reader 预读
+4. 执行步骤拆解
 5. 预期答案格式
 
 【Phase 2：执行】
-按规划逐步执行，每步：
-1. Thought: 确认当前步骤和输入
-2. Action: 调用工具
-3. Observation: 分析结果，决定下一步
+按规划逐步调用工具，每步在内部思考（不要输出 Thought/Action/Observation）
 
 【Phase 3：验证】
-输出前自检（见自检清单）
+输出前通过 answer_checker 验证
 
 【数据处理策略】（关键，减少上下文膨胀）
 
@@ -569,29 +571,9 @@ class ContestantAgent:
     def _clean_final_answer(self, content: str) -> str:
         # 去掉 <think> 标签及其内容
         cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        # 去掉可能残留的 <think> 或 </think> 标签
         cleaned = re.sub(r'</?think>', '', cleaned).strip()
-        # 去掉 VERIFIED 标记
-        cleaned = re.sub(r'\bVERIFIED\b', '', cleaned).strip()
-        # 去掉 ReAct 框架标签（弱模型会把这些输出到答案里）
-        cleaned = re.sub(r'^(Thought|Action|Observation|Final Answer|Answer Checker|自检)[：:]\s*.*$', '', cleaned, flags=re.MULTILINE).strip()
-        # 去掉 "Answer:" 前缀
-        cleaned = re.sub(r'^(Answer|答案)[：:]\s*', '', cleaned).strip()
-
-        # 如果清理后为空，返回原始内容
         if not cleaned:
             return content.strip()
-
-        # 如果最后一行是逗号分隔的值（无空格），只取最后一行
-        lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
-        if lines:
-            last_line = lines[-1]
-            # 检测纯逗号分隔格式（如 PO-001,PO-002,PO-003）
-            if re.match(r'^[A-Za-z0-9_\-]+(,[A-Za-z0-9_\-]+)+$', last_line):
-                return last_line
-            # 如果最后一行是短文本（<200字），很可能是最终答案
-            if len(last_line) < 200 and not any(kw in last_line for kw in ['Action:', 'Observation:', 'Thought:']):
-                return last_line
         return cleaned
 
     async def _verify_and_fix(
@@ -612,7 +594,7 @@ class ContestantAgent:
         max_fix_rounds = env_int("AGENT_DEMO_MAX_ITER", 100)
 
         for fix_round in range(max_fix_rounds):
-            # Call answer_checker
+            # Call answer_checker — it validates AND cleans
             checker_result = await self._call_tool_as_text(
                 context, "agent_delegate",
                 {"agent_name": "answer_checker", "task": f"验证答案：{candidate}", "context_text": ""},
@@ -621,36 +603,25 @@ class ContestantAgent:
             try:
                 checker = json.loads(checker_result)
             except json.JSONDecodeError:
-                # Checker returned non-JSON, assume valid
                 return candidate
 
+            # Use cleaned_answer if available (checker strips Thought/Action/Observation)
+            cleaned = checker.get("cleaned_answer", candidate)
+
             if checker.get("overall_valid", True):
-                return candidate
+                return cleaned
 
             suggestions = checker.get("fix_suggestions", [])
             if not suggestions:
-                return candidate
+                return cleaned
 
-            # Classify: format-only or content error?
-            format_keywords = ["格式", "format", "多余", "extra", "Thought", "解释", "VERIFIED",
-                               "排序", "sort", "去重", "dedup", "JSON", "字段顺序", "key order"]
-            is_format_only = all(
-                any(kw.lower() in s.lower() for kw in format_keywords)
-                for s in suggestions
+            # Content/logic errors → send back to LLM for fix
+            fix_prompt = (
+                f"answer_checker 发现以下问题：\n"
+                + "\n".join(f"- {s}" for s in suggestions)
+                + f"\n\n当前答案：{cleaned}\n\n"
+                "请根据建议修正答案，直接输出修正后的答案正文。不要输出 Thought/Action/Observation。"
             )
-
-            if is_format_only:
-                # Format issues → code fix directly
-                fixed = candidate
-                for s in suggestions:
-                    if "Thought" in s or "解释" in s or "多余" in s or "extra" in s:
-                        fixed = self._clean_final_answer(fixed)
-                    if "排序" in s or "sort" in s:
-                        parts = [p.strip() for p in fixed.split(",") if p.strip()]
-                        fixed = ",".join(sorted(parts))
-                    if "VERIFIED" in s:
-                        fixed = re.sub(r'\bVERIFIED\b', '', fixed).strip()
-                return fixed
 
             # Content/logic errors → send back to LLM for fix
             fix_prompt = (
