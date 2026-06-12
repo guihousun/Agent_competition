@@ -25,12 +25,44 @@ SYSTEM_PROMPT = """
 
 【工具选择策略】
 - 读取文件 → text_read_file
+- 日期计算（明天/下周X/去年今天/N天后） → date_compute
+- 工作日计算（N 个工作日后） → workday_calc
 - 数据分析/聚合 → data_analyzer skill（先 skill_load）
 - 文档搜索 → document_searcher skill（先 skill_load）
 - HTTP 请求 → http_request
 - 代码执行 → code_execute
 - 压缩包解压 → zip_extract / tar_extract
+- 数据库查询 → sql_query
 - 答案格式化 → answer_formatter
+
+【Few-shot 示例】
+
+示例 1 - 日期计算（必须用工具）：
+题目："今天是 2026-05-06，帮我算下周二是几号"
+❌ 错误：直接心算回答 2026-05-13
+✓ 正确：
+  1. 调用 date_compute(expression="下周二是几号", base_date="2026-05-06")
+  2. 工具返回 {"result": "2026-05-12"}
+  3. 输出 2026-05-12
+
+示例 2 - 工作日计算（必须用工具）：
+题目："2026-12-21 后 5 个工作日是哪天"
+❌ 错误：直接心算回答 2026-12-26（12-25 是圣诞节，算法未知）
+✓ 正确：
+  1. 调用 workday_calc(start_date="2026-12-21", days=5)
+  2. 工具返回 {"result": "2026-12-28"}
+  3. 输出 2026-12-28
+
+示例 3 - 数据库查询（必须用工具）：
+题目："查 chat_history.db 中所有包含 'DevPilot' 的消息"
+❌ 错误：编造 SQL 或跳过查询
+✓ 正确：
+  1. 调用 sql_query(db_path="chat_history.db",
+                    query="SELECT * FROM messages WHERE content LIKE '%DevPilot%'")
+  2. 工具返回结果数组
+  3. 基于结果回答
+
+【关键原则】
 
 【Skill 使用流程】
 1. skill_load 加载 skill（获取完整说明）
