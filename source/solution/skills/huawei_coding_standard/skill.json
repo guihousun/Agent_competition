@@ -1,6 +1,0 @@
-{
-  "name": "huawei_coding_standard",
-  "description": "华为编程规范查询与代码审查",
-  "version": "1.0.0",
-  "entrypoint": "scripts/run.py"
-}
