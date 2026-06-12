@@ -1,0 +1,7 @@
+{
+  "name": "data_reader",
+  "description": "Data pre-reader sub-agent. Reads raw data files (CSV, logs, DB, JSON, emails) and returns structured summaries or precise query chains. Keeps raw data out of main agent context.",
+  "role": "data reading and summarization specialist",
+  "entrypoint": "scripts/run.py",
+  "timeout_seconds": 60
+}
