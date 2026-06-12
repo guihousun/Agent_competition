@@ -17,15 +17,7 @@ beautifulsoup4>=4.12.0     # HTML/XML parsing
 Pillow>=10.0.0             # Image processing
 
 # ============================================================
-# OCR (optional — requires system Tesseract + Poppler)
-# ============================================================
-# pytesseract>=0.3.10      # Tesseract OCR wrapper
-# pdf2image>=1.16.0        # PDF to image (needs Poppler)
-
-# ============================================================
 # System Dependencies (not pip-installable)
 # ============================================================
 # Java JDK — for code_execute Java support
 # Node.js — for code_execute JavaScript support
-# Tesseract OCR — for image text extraction (apt install tesseract-ocr)
-# Poppler — for PDF OCR (apt install poppler-utils)
