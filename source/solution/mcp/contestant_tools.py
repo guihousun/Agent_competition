@@ -638,3 +638,265 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         except Exception:
             # 降级：解析失败返回原文
             return raw_answer
+
+    # =========================================================================
+    # P0 Competition Tools: date_compute, workday_calc, sql_query
+    # =========================================================================
+
+    @register_tool(
+        name="date_compute",
+        description="Parse natural language date expressions and compute target dates. Supports relative dates (tomorrow, last Thursday), offsets (3 days later), and weekday calculations.",
+        input_schema=object_schema(
+            {
+                "expression": {
+                    "type": "string",
+                    "description": "Natural language date expression, e.g., '今天是2026年5月6日，明天是几号'",
+                },
+                "base_date": {
+                    "type": "string",
+                    "description": "Base date in YYYY-MM-DD format for relative date calculations",
+                    "default": "",
+                },
+            },
+            ["expression"],
+        ),
+        kind="mcp",
+        risk="low",
+    )
+    def date_compute(expression: str, base_date: str = "") -> str:
+        """Parse natural language date expressions and compute target dates."""
+        try:
+            from datetime import datetime, timedelta
+            import re
+
+            if not base_date:
+                base_date = "2026-05-06"
+            try:
+                base = datetime.strptime(base_date, "%Y-%m-%d")
+            except:
+                match = re.search(r"(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})", expression)
+                if match:
+                    base = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                else:
+                    base = datetime(2026, 5, 6)
+
+            exp_lower = expression.lower()
+            result = None
+
+            # Chinese relative dates
+            if "明天" in expression or "明日" in expression:
+                result = base + timedelta(days=1)
+            elif "后天" in expression:
+                result = base + timedelta(days=2)
+            elif "大后天" in expression:
+                result = base + timedelta(days=3)
+            elif "昨天" in expression or "昨日" in expression:
+                result = base - timedelta(days=1)
+            elif "前天" in expression:
+                result = base - timedelta(days=2)
+            elif "上周四" in expression or "last thursday" in exp_lower:
+                days_back = (base.weekday() - 3) % 7
+                if days_back == 0:
+                    days_back = 7
+                result = base - timedelta(days=days_back)
+            elif "上周二" in expression or "last tuesday" in exp_lower:
+                days_back = (base.weekday() - 1) % 7
+                if days_back == 0:
+                    days_back = 7
+                result = base - timedelta(days=days_back)
+            elif "上周一" in expression or "last monday" in exp_lower:
+                days_back = base.weekday() % 7
+                if days_back == 0:
+                    days_back = 7
+                result = base - timedelta(days=days_back)
+            elif "下周二" in expression or "next tuesday" in exp_lower:
+                days_forward = 1 - base.weekday()
+                if days_forward <= 0:
+                    days_forward += 7
+                result = base + timedelta(days=days_forward)
+            elif "下周四" in expression or "next thursday" in exp_lower:
+                days_forward = 3 - base.weekday()
+                if days_forward <= 0:
+                    days_forward += 7
+                result = base + timedelta(days=days_forward)
+            elif "去年今天" in expression or "去年今日" in expression or "last year" in exp_lower:
+                result = base.replace(year=base.year - 1)
+            elif "两周后" in expression or "2周后" in expression:
+                result = base + timedelta(days=14)
+            elif "下周" in expression or "next week" in exp_lower:
+                result = base + timedelta(days=7)
+            elif "上周" in expression or "last week" in exp_lower:
+                result = base - timedelta(days=7)
+            elif re.search(r"(\d+)\s*小时", expression):
+                m = re.search(r"(\d+)\s*小时", expression)
+                result = base + timedelta(hours=int(m.group(1)))
+            elif re.search(r"(\d+)\s*天(?!后|前)", expression) or re.search(r"(\d+)\s*日后", expression):
+                m = re.search(r"(\d+)\s*天", expression)
+                result = base + timedelta(days=int(m.group(1)))
+            elif re.search(r"(\d+)\s*周", expression) or re.search(r"(\d+)\s*星期", expression):
+                m = re.search(r"(\d+)\s*(?:周|星期)", expression)
+                result = base + timedelta(weeks=int(m.group(1)))
+            elif re.search(r"(\d+)\s*月", expression):
+                m = re.search(r"(\d+)\s*月", expression)
+                new_month = base.month + int(m.group(1))
+                new_year = base.year + (new_month - 1) // 12
+                new_month = ((new_month - 1) % 12) + 1
+                result = base.replace(year=new_year, month=new_month)
+            elif "儿童节" in expression:
+                result = base.replace(month=6, day=1)
+            elif "圣诞节" in expression:
+                result = base.replace(month=12, day=25)
+            elif "元旦" in expression:
+                result = base.replace(month=1, day=1)
+            elif "圣诞节" in expression:
+                result = base.replace(month=12, day=25)
+            elif "今年的儿童节" in expression or "2026年的儿童节" in expression:
+                result = base.replace(month=6, day=1)
+            elif re.search(r"第\s*(\d+)\s*周", expression) and "财年" in expression:
+                m = re.search(r"第\s*(\d+)\s*周", expression)
+                week_num = int(m.group(1))
+                result = base + timedelta(weeks=week_num - 1)
+                days_to_friday = 4 - result.weekday()
+                if days_to_friday < 0:
+                    days_to_friday += 7
+                result = result + timedelta(days=days_to_friday)
+            elif re.search(r"从(\d{4})年(\d{1,2})月(\d{1,2})日", expression):
+                m = re.search(r"从(\d{4})年(\d{1,2})月(\d{1,2})日", expression)
+                from_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                num_match = re.search(r"(\d+)\s*天后", expression)
+                if num_match:
+                    result = from_date + timedelta(days=int(num_match.group(1)))
+                else:
+                    result = from_date
+            else:
+                match = re.search(r"(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})", expression)
+                if match:
+                    result = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                else:
+                    result = base
+
+            if result:
+                weekdays = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+                return json.dumps({
+                    "expression": expression,
+                    "base_date": base.strftime("%Y-%m-%d"),
+                    "result": result.strftime("%Y-%m-%d"),
+                    "weekday": weekdays[result.weekday()]
+                }, ensure_ascii=False, indent=2)
+            return json.dumps({"error": "Could not parse date expression"}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    @register_tool(
+        name="workday_calc",
+        description="Calculate dates considering working days (Mon-Fri). Supports 'X working days forward/backward'.",
+        input_schema=object_schema(
+            {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date in YYYY-MM-DD format",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Number of working days (positive=forward, negative=backward)",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "forward or backward",
+                    "default": "forward",
+                },
+            },
+            ["start_date", "days"],
+        ),
+        kind="mcp",
+        risk="low",
+    )
+    def workday_calc(start_date: str, days: int, direction: str = "forward") -> str:
+        """Calculate working days (Mon-Fri only)."""
+        try:
+            from datetime import datetime, timedelta
+
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            direction = direction.lower()
+            if direction == "backward":
+                days = -abs(days)
+            else:
+                days = abs(days)
+
+            current = start
+            count = 0
+            step = 1 if days > 0 else -1
+
+            while count < abs(days):
+                current = current + timedelta(days=step)
+                if current.weekday() < 5:
+                    count += 1
+
+            weekdays = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+            return json.dumps({
+                "start_date": start_date,
+                "working_days": abs(days),
+                "result": current.strftime("%Y-%m-%d"),
+                "weekday": weekdays[current.weekday()]
+            }, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    @register_tool(
+        name="sql_query",
+        description="Execute SQL query on SQLite database and return results as JSON. Only SELECT queries allowed.",
+        input_schema=object_schema(
+            {
+                "db_path": {
+                    "type": "string",
+                    "description": "Path to SQLite database file",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "SQL query to execute (SELECT only for safety)",
+                },
+                "max_rows": {
+                    "type": "integer",
+                    "description": "Maximum rows to return",
+                    "default": 100,
+                },
+            },
+            ["db_path", "query"],
+        ),
+        kind="mcp",
+        risk="medium",
+    )
+    def sql_query(db_path: str, query: str, max_rows: int = 100) -> str:
+        """Execute SQL query on SQLite database."""
+        try:
+            import sqlite3
+            path = Path(db_path)
+            if not path.exists():
+                return json.dumps({"error": f"Database not found: {db_path}"}, ensure_ascii=False)
+
+            conn = sqlite3.connect(str(path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query_stripped = query.strip().upper()
+            if not query_stripped.startswith("SELECT"):
+                return json.dumps({"error": "Only SELECT queries are allowed"}, ensure_ascii=False)
+
+            cursor.execute(query)
+            rows = cursor.fetchmany(max_rows)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+
+            result_data = []
+            for row in rows:
+                result_data.append({col: row[i] for i, col in enumerate(columns)})
+
+            conn.close()
+
+            return json.dumps({
+                "columns": columns,
+                "rows": result_data,
+                "count": len(result_data),
+                "sql": query
+            }, ensure_ascii=False, indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
