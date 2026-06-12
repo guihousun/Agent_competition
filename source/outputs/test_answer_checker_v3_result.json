@@ -1,0 +1,6 @@
+[
+  {
+    "id": "test_answer_checker_001",
+    "answer": "The answer_checker sub-agent encountered an internal error, but the date_compute tool results are clear and correct:\n\n1. 明天 = 2026-05-07\n2. 上周四 = 2026-04-30\n3. 下周二 = 2026-05-12\n\n2026-05-07,2026-04-30,2026-05-12"
+  }
+]

@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Answer Checker Sub-agent - Verifies answer format and correctness."""
+"""Answer Checker Sub-agent - Verifies answer against question requirements and provides fix suggestions."""
 
 import json
 import sys
+import re
 from datetime import datetime, timedelta
 
 
 def check_format(answer: str, format_type: str) -> dict:
     """Check if answer matches required format."""
     errors = []
+    suggestions = []
 
     if format_type == "exact":
         # 精确匹配：不应包含多余文字
         if len(answer) > 200:
             errors.append("Answer too long for exact match")
-        if "答案是" in answer or "答案:" in answer:
+            suggestions.append(f"Answer is {len(answer)} chars, should be under 200")
+        if "答案是" in answer or "答案:" in answer or "根据" in answer:
             errors.append("Answer contains explanation text")
+            suggestions.append("Remove explanation text like '答案是', '答案:', '根据'")
 
     elif format_type == "json":
         # JSON 字段匹配：检查字段顺序
@@ -25,8 +29,10 @@ def check_format(answer: str, format_type: str) -> dict:
                 keys = list(data.keys())
                 if keys != sorted(keys):
                     errors.append(f"JSON keys not in alphabetical order: {keys} vs {sorted(keys)}")
+                    suggestions.append(f"Reorder JSON keys alphabetically: {sorted(keys)}")
         except json.JSONDecodeError:
             errors.append("Invalid JSON format")
+            suggestions.append("Fix JSON syntax errors")
 
     elif format_type == "list":
         # 列表匹配：检查排序和去重
@@ -35,20 +41,24 @@ def check_format(answer: str, format_type: str) -> dict:
             if isinstance(data, list):
                 if data != sorted(data):
                     errors.append("List not sorted")
+                    suggestions.append(f"Sort the list: {sorted(data)}")
                 if len(data) != len(set(data)):
                     errors.append("List contains duplicates")
+                    suggestions.append(f"Remove duplicates: {list(set(data))}")
         except json.JSONDecodeError:
             errors.append("Invalid JSON format")
+            suggestions.append("Fix JSON syntax errors")
 
     return {
         "format_type": format_type,
         "valid": len(errors) == 0,
-        "errors": errors
+        "errors": errors,
+        "suggestions": suggestions
     }
 
 
 def check_date_calculation(expression: str, base_date_str: str, answer: str) -> dict:
-    """Verify date calculation result."""
+    """Verify date calculation result and provide fix suggestion."""
     try:
         base = datetime.strptime(base_date_str, "%Y-%m-%d")
         expected = None
@@ -95,66 +105,105 @@ def check_date_calculation(expression: str, base_date_str: str, answer: str) -> 
                     "valid": False,
                     "expected": expected.strftime("%Y-%m-%d"),
                     "actual": answer,
-                    "error": f"Date mismatch: expected {expected.strftime('%Y-%m-%d')}, got {answer}"
+                    "error": f"Date mismatch: expected {expected.strftime('%Y-%m-%d')}, got {answer}",
+                    "suggestion": f"Change '{answer}' to '{expected.strftime('%Y-%m-%d')}'"
                 }
 
         return {
             "valid": True,
             "expected": expected.strftime("%Y-%m-%d") if expected else "unknown",
-            "actual": answer
+            "actual": answer,
+            "suggestion": None
         }
 
     except Exception as e:
         return {
             "valid": False,
-            "error": str(e)
+            "error": str(e),
+            "suggestion": "Check date format and calculation logic"
         }
 
 
-def check_answer(question: dict, answer: str) -> dict:
-    """Comprehensive answer check."""
-    results = {
-        "question_id": question.get("id", "unknown"),
-        "checks": [],
-        "overall_valid": True,
-        "suggestions": []
+def parse_question_requirements(description: str) -> dict:
+    """Parse question description to extract requirements."""
+    requirements = {
+        "format": "exact",  # default
+        "has_date_calculation": False,
+        "has_json_output": False,
+        "has_list_output": False,
+        "expected_count": None,
+        "base_date": None
     }
 
-    # 1. 检查是否为空（从 task 中提取答案）
+    desc_lower = description.lower()
+
+    # 检测日期计算
+    if any(kw in desc_lower for kw in ["日期", "天", "周", "月", "年", "星期"]):
+        requirements["has_date_calculation"] = True
+        # 提取 base_date
+        date_match = re.search(r'(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})', description)
+        if date_match:
+            requirements["base_date"] = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+
+    # 检测 JSON 输出
+    if "json" in desc_lower or "输出格式" in description:
+        requirements["has_json_output"] = True
+        requirements["format"] = "json"
+
+    # 检测列表输出
+    if "逗号分隔" in description or "，分隔" in description or "列表" in desc_lower:
+        requirements["has_list_output"] = True
+        requirements["format"] = "list"
+
+    # 检测期望数量
+    count_match = re.search(r'(\d+)\s*个', description)
+    if count_match:
+        requirements["expected_count"] = int(count_match.group(1))
+
+    return requirements
+
+
+def check_answer_against_requirements(question: dict, answer: str) -> dict:
+    """Check answer against question requirements and provide fix suggestions."""
+    description = question.get("description", "")
+    task = question.get("task", "")
+    full_text = description + " " + task
+
+    # 解析题目要求（使用完整文本）
+    requirements = parse_question_requirements(full_text)
+
+    results = {
+        "question_id": question.get("id", "unknown"),
+        "requirements": requirements,
+        "checks": [],
+        "overall_valid": True,
+        "fix_suggestions": []
+    }
+
+    # 1. 检查答案是否为空
     if not answer or not answer.strip():
-        # 尝试从 task 描述中提取答案
-        task = question.get("task", "")
-        # 查找日期模式
-        import re
-        dates = re.findall(r'\d{4}-\d{2}-\d{2}', task)
-        if dates:
-            answer = ",".join(dates)
-        else:
-            results["checks"].append({
-                "type": "empty_check",
-                "valid": False,
-                "message": "Answer is empty and no dates found in task"
-            })
-            results["overall_valid"] = False
-            results["suggestions"].append("Answer should not be empty")
-            return results
+        results["checks"].append({
+            "type": "empty_check",
+            "valid": False,
+            "message": "Answer is empty"
+        })
+        results["overall_valid"] = False
+        results["fix_suggestions"].append("Provide an answer, not empty string")
+        return results
+
+    answer = answer.strip()
 
     # 2. 检查格式
-    format_type = question.get("format_type", "exact")
-    format_result = check_format(answer.strip(), format_type)
+    format_result = check_format(answer, requirements["format"])
     results["checks"].append(format_result)
     if not format_result["valid"]:
         results["overall_valid"] = False
-        results["suggestions"].extend(format_result["errors"])
+        results["fix_suggestions"].extend(format_result["suggestions"])
 
-    # 3. 检查日期计算（如果题目包含日期）
-    question_text = question.get("description", "") + " " + question.get("task", "")
-    if any(kw in question_text for kw in ["日期", "天", "周", "月", "年"]):
-        # 提取 base_date
-        base_date = question.get("base_date", "2026-05-06")
-        # 提取所有日期表达式和答案
-        import re
-        date_expressions = re.findall(r'(上周[一二三四五六日天]|下周[一二三四五六日天]|昨天|明天|后天|前天|去年今天|去年今日)', question_text)
+    # 3. 检查日期计算
+    if requirements["has_date_calculation"]:
+        base_date = requirements.get("base_date", "2026-05-06")
+        date_expressions = re.findall(r'(上周[一二三四五六日天]|下周[一二三四五六日天]|昨天|明天|后天|前天|去年今天|去年今日)', full_text)
         answer_dates = re.findall(r'\d{4}-\d{2}-\d{2}', answer)
 
         if date_expressions and answer_dates:
@@ -163,17 +212,44 @@ def check_answer(question: dict, answer: str) -> dict:
                 results["checks"].append(date_result)
                 if not date_result["valid"]:
                     results["overall_valid"] = False
-                    results["suggestions"].append(date_result.get("error", ""))
+                    if date_result.get("suggestion"):
+                        results["fix_suggestions"].append(date_result["suggestion"])
+        elif date_expressions and not answer_dates:
+            results["checks"].append({
+                "type": "date_check",
+                "valid": False,
+                "message": "Date calculation required but no date found in answer"
+            })
+            results["overall_valid"] = False
+            results["fix_suggestions"].append("Add calculated date in YYYY-MM-DD format")
 
-    # 4. 检查长度合理性
-    if len(answer) > 1000:
-        results["checks"].append({
-            "type": "length_check",
-            "valid": False,
-            "message": f"Answer too long ({len(answer)} chars)"
-        })
-        results["overall_valid"] = False
-        results["suggestions"].append("Consider shortening the answer")
+    # 4. 检查答案数量（如果题目指定期望数量）
+    if requirements["expected_count"]:
+        # 统计答案中的项目数（逗号分隔或 JSON 数组）
+        if requirements["format"] == "list":
+            try:
+                data = json.loads(answer)
+                if isinstance(data, list) and len(data) != requirements["expected_count"]:
+                    results["checks"].append({
+                        "type": "count_check",
+                        "valid": False,
+                        "message": f"Expected {requirements['expected_count']} items, got {len(data)}"
+                    })
+                    results["overall_valid"] = False
+                    results["fix_suggestions"].append(f"Answer should contain exactly {requirements['expected_count']} items")
+            except:
+                pass
+        else:
+            # 逗号分隔的字符串
+            items = [x.strip() for x in answer.split(",") if x.strip()]
+            if len(items) != requirements["expected_count"]:
+                results["checks"].append({
+                    "type": "count_check",
+                    "valid": False,
+                    "message": f"Expected {requirements['expected_count']} items, got {len(items)}"
+                })
+                results["overall_valid"] = False
+                results["fix_suggestions"].append(f"Answer should contain exactly {requirements['expected_count']} items, separated by commas")
 
     # 5. 检查是否包含解释文字
     if "答案是" in answer or "答案:" in answer or "根据" in answer:
@@ -183,7 +259,13 @@ def check_answer(question: dict, answer: str) -> dict:
             "message": "Answer contains explanation text"
         })
         results["overall_valid"] = False
-        results["suggestions"].append("Remove explanation text, output only the answer")
+        results["fix_suggestions"].append("Remove explanation text, output ONLY the answer (no '答案是', '根据', etc.)")
+
+    # 6. 生成最终建议摘要
+    if not results["overall_valid"]:
+        results["summary"] = f"Answer needs fixes: {'; '.join(results['fix_suggestions'])}"
+    else:
+        results["summary"] = "Answer looks good!"
 
     return results
 
@@ -202,7 +284,7 @@ def main():
     question = params.get("question", {})
     answer = params.get("answer", "")
 
-    result = check_answer(question, answer)
+    result = check_answer_against_requirements(question, answer)
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

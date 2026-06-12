@@ -105,6 +105,37 @@ SYSTEM_PROMPT = """
 3. 列表题：是否排序去重？
 4. 字段匹配：JSON 字段是否按字母顺序？
 
+【Answer Checker 使用流程】
+
+在输出最终答案前，必须调用 answer_checker 验证答案：
+
+1. 调用 agent_delegate:
+   - agent_name: "answer_checker"
+   - task: 完整的题目描述 + 你的答案
+   - context_text: 工具返回的原始结果
+
+2. 分析 answer_checker 返回：
+   - overall_valid: true → 直接输出答案
+   - overall_valid: false → 根据 fix_suggestions 修改答案
+
+3. 如果 answer_checker 指出错误：
+   - 根据 fix_suggestions 修改答案
+   - 再次调用 answer_checker 验证
+   - 最多重试 2 次
+
+示例：
+```
+调用：agent_delegate(agent_name="answer_checker",
+                    task="题目：今天是 2026-05-06，下周二几号？答案：2026-05-13",
+                    context_text="date_compute 返回：2026-05-12")
+
+返回：{"overall_valid": false,
+       "fix_suggestions": ["Change '2026-05-13' to '2026-05-12'"]}
+
+修改：将答案改为 2026-05-12
+再次验证：overall_valid = true → 输出
+```
+
 【答案格式规则】（必须严格遵守，违反则不得分）
 
 1. 只输出答案正文，不要：
