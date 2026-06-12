@@ -1,0 +1,20 @@
+[
+  {
+    "id": "3_3",
+    "title": "IDE 插件 FSE 数字人问答",
+    "description": "某企业内部使用 DevPilot IDE 插件，需要根据 FSE 人设、历史处理记录和 Wiki 资料，回答插件使用与支撑过程中的相关问题。\n\n【输入文件】\n- persona.md：FSE 数字人的人设、称呼和服务表达要求\n- chat_history.db：SQLite 数据库文件，存放历史问题处理记录\n- source_access.json：本地 Wiki 服务的访问入口、接口路径、页面入口和 service_action 可选项\n- dialog_tests_complex.json：需要按顺序回答的问题列表\n\n【本地服务】\n本地 Wiki 服务地址为 http://127.0.0.1:18089。\n\n【你的任务】\n请根据 persona.md、chat_history.db、source_access.json 和 Wiki 服务资料，回答 dialog_tests_complex.json 中所有问题。每个问题都需要输出固定格式的结果，结果由题目 ID、称呼、人设化回答内容和服务动作组成。\n\n【返回格式】\n输出一个 JSON 数组，每个元素包含 id, greeting, answer, service_action 四个字段。",
+    "files": [
+      "files/IDE插件FSE/"
+    ],
+    "level": 3,
+    "tools": [
+      "text_read_file",
+      "http_request",
+      "code_execute",
+      "sql_query",
+      "answer_formatter"
+    ],
+    "skills": [],
+    "sub_agents": []
+  }
+]
