@@ -9,6 +9,7 @@ from source.runtime.env_config import ModelConfig, env_bool, env_int, load_doten
 from source.runtime.agent_context import AgentContext
 from source.runtime.openai_chat_client import ChatCompletionClient, first_message
 from source.runtime.tracing import get_active_trace
+from source.runtime.context_compressor import should_compress, compress_messages, estimate_messages_tokens
 
 
 SYSTEM_PROMPT = """
@@ -297,6 +298,12 @@ class ContestantAgent:
 
         max_iter = env_int("AGENT_DEMO_MAX_ITER", 100)
         for step in range(1, max_iter + 1):
+            # Context compression: when approaching 256k limit, compress older messages
+            if should_compress(messages, limit=200_000):
+                before = estimate_messages_tokens(messages)
+                messages[:] = compress_messages(messages, keep_recent=6, target_tokens=150_000)
+                after = estimate_messages_tokens(messages)
+
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
             message = first_message(completion)
             tool_calls = self._tool_calls_from_message(message)
