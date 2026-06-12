@@ -96,17 +96,27 @@ class LocalMCPClient:
         if name not in self._tools:
             raise KeyError(f"Unknown tool: {name}")
 
-        if name == "text_read_file":
-            args["path"] = str(self._resolve_allowed_file(args, runtime_context))
+        # Resolve file paths for tools that read files
+        path_keys = {
+            "text_read_file": "path",
+            "zip_extract": "zip_path",
+            "tar_extract": "tar_path",
+            "csv_read": "path",
+            "sql_query": "db_path",
+            "image_read": "path",
+        }
+        if name in path_keys:
+            key = path_keys[name]
+            if key in args:
+                args[key] = str(self._resolve_allowed_file(args[key], runtime_context))
 
         return await self._tools[name].call(args)
 
     def _resolve_allowed_file(
         self,
-        args: dict[str, Any],
+        raw_path: str,
         runtime_context: dict[str, Any],
     ) -> Path:
-        raw_path = str(args.get("path", ""))
         question_dir = Path(runtime_context["question_dir"]).resolve()
         target = Path(raw_path)
         if not target.is_absolute():
