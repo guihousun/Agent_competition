@@ -300,9 +300,10 @@ class ContestantAgent:
         for step in range(1, max_iter + 1):
             # Context compression: when approaching 256k limit, compress older messages
             if should_compress(messages, limit=200_000):
-                before = estimate_messages_tokens(messages)
-                messages[:] = compress_messages(messages, keep_recent=6, target_tokens=150_000)
-                after = estimate_messages_tokens(messages)
+                messages[:] = await compress_messages(
+                    messages, keep_recent=6, target_tokens=150_000,
+                    client=client,
+                )
 
             completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
             message = first_message(completion)
