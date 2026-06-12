@@ -20,12 +20,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeBudgetTests(unittest.TestCase):
-    def test_model_timeout_defaults_to_300_seconds(self) -> None:
+    def test_model_timeout_defaults_to_600_seconds(self) -> None:
         with (
             patch("source.runtime.env_config.load_dotenv"),
             patch.dict(os.environ, {}, clear=True),
         ):
-            self.assertEqual(ModelConfig.from_env().timeout_seconds, 300)
+            self.assertEqual(ModelConfig.from_env().timeout_seconds, 600)
+
+    def test_model_stream_defaults_to_true(self) -> None:
+        with (
+            patch("source.runtime.env_config.load_dotenv"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertTrue(ModelConfig.from_env().stream)
+
+    def test_model_timeout_and_stream_can_be_overridden(self) -> None:
+        with (
+            patch("source.runtime.env_config.load_dotenv"),
+            patch.dict(
+                os.environ,
+                {
+                    "AGENT_DEMO_TIMEOUT_SECONDS": "45",
+                    "AGENT_DEMO_STREAM": "false",
+                },
+                clear=True,
+            ),
+        ):
+            config = ModelConfig.from_env()
+
+        self.assertEqual(config.timeout_seconds, 45)
+        self.assertFalse(config.stream)
 
     def test_tool_output_limit_defaults_to_65536_chars(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -285,6 +309,36 @@ class LLMSubAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "2")
         self.assertEqual(context.call_tool.await_count, 2)
         client.create.assert_not_awaited()
+
+    async def test_verifier_preserves_candidate_after_repeated_invalid_json(self) -> None:
+        context = SimpleNamespace()
+        context.call_tool = AsyncMock(side_effect=["not-json", "still-not-json"])
+
+        result = await contestant_agent.ContestantAgent()._verify_and_fix(
+            candidate="candidate-answer",
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "question"},
+            ],
+            client=AsyncMock(),
+            tools=[],
+            context=context,
+        )
+
+        self.assertEqual(result, "candidate-answer")
+        self.assertEqual(context.call_tool.await_count, 2)
+
+    def test_sub_agent_prompt_builder_uses_utf8_for_bom_context(self) -> None:
+        agent = _load_agent_package(ROOT / "source/solution/agents/answer_checker")
+        self.assertIsNotNone(agent)
+
+        prompt_package = agent._build_prompt_package(
+            "candidate",
+            "\ufeffevidence",
+            {"question": {"id": "utf8", "question": "verify"}},
+        )
+
+        self.assertEqual(prompt_package["context"], "\ufeffevidence")
 
 
 class DashboardSemanticsTests(unittest.TestCase):

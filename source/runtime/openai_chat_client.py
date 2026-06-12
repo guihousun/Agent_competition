@@ -85,6 +85,8 @@ class ChatCompletionClient:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
+        if self.config.stream:
+            headers["Accept"] = "text/event-stream"
         if self.config.package_id:
             headers["package_id"] = self.config.package_id
 
@@ -150,6 +152,8 @@ class ChatCompletionClient:
         completion_id = "streamed"
         model = self.config.model
         created = None
+        usage = None
+        saw_choice = False
 
         for line in data.splitlines():
             line = line.strip()
@@ -163,12 +167,23 @@ class ChatCompletionClient:
             except json.JSONDecodeError:
                 continue
 
+            error = chunk.get("error")
+            if error:
+                if isinstance(error, dict):
+                    detail = error.get("message") or json.dumps(error, ensure_ascii=False)
+                else:
+                    detail = str(error)
+                raise RuntimeError(f"Model gateway stream error: {detail}")
+
             completion_id = chunk.get("id") or completion_id
             model = chunk.get("model") or model
             created = chunk.get("created", created)
+            if isinstance(chunk.get("usage"), dict):
+                usage = chunk["usage"]
             choices = chunk.get("choices") or []
             if not choices:
                 continue
+            saw_choice = True
             choice = choices[0]
             finish_reason = choice.get("finish_reason") or finish_reason
             delta = choice.get("delta") or choice.get("message") or {}
@@ -221,6 +236,9 @@ class ChatCompletionClient:
                 if function_call.get("arguments"):
                     current["function"]["arguments"] += function_call["arguments"]
 
+        if not saw_choice:
+            raise RuntimeError("Model gateway stream returned no usable choices.")
+
         message: dict[str, Any] = {
             "role": role,
             "content": "".join(content_parts),
@@ -230,7 +248,7 @@ class ChatCompletionClient:
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
 
-        return {
+        result = {
             "id": completion_id,
             "created": created,
             "model": model,
@@ -243,6 +261,9 @@ class ChatCompletionClient:
                 }
             ],
         }
+        if usage is not None:
+            result["usage"] = usage
+        return result
 
 
 def first_message(completion: dict[str, Any]) -> dict[str, Any]:

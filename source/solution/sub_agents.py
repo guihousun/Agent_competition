@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -160,8 +161,11 @@ class ScriptSubAgent(BaseSubAgent):
             [sys.executable, str(script_path)],
             input=json.dumps(payload, ensure_ascii=False),
             text=True,
+            encoding="utf-8",
+            errors="strict",
             capture_output=True,
             cwd=str(self.agent_dir),
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=self.timeout_seconds,
             check=False,
         )

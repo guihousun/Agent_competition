@@ -230,6 +230,35 @@ class ArchiveWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("unsafe archive member", result["error"].lower())
         self.assertFalse((root / "escape.txt").exists())
 
+    async def test_basename_resolves_inside_declared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            declared_dir = root / "declared"
+            declared_dir.mkdir()
+            expected = declared_dir / "data.csv"
+            expected.write_text("value\n1\n", encoding="utf-8")
+            workspace = root / "workspace"
+            workspace.mkdir()
+            mcp = LocalMCPClient(agent_registry=AgentRegistry())
+            runtime = {
+                "question_id": "directory",
+                "question": {"id": "directory", "question": "read"},
+                "question_dir": str(root),
+                "workspace_dir": str(workspace),
+                "allowed_file_paths": [str(declared_dir), str(workspace)],
+                "allowed_tools": mcp.tool_names(),
+                "allowed_agents": [],
+                "package_id": "",
+            }
+
+            content = await mcp.call_tool(
+                "text_read_file",
+                {"path": "data.csv"},
+                runtime_context=runtime,
+            )
+
+        self.assertEqual(content, "value\n1\n")
+
     def _runtime(
         self,
         *,

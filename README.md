@@ -14,6 +14,7 @@
 # 1. 配置环境
 cp .env.example .env
 # 编辑 .env，填入 MODEL_CHAT_COMPLETIONS_URL、MODEL_API_KEY、MODEL_NAME
+# 比赛默认使用 stream=true，单次模型请求超时 600 秒
 
 # 2. 安装依赖
 pip install -r requirements.txt
@@ -105,7 +106,7 @@ Thought → Action → Observation → 重复 → Answer
 ```
 
 ### 2. 自检循环
-- 默认 max_iter = 8，可配置
+- 默认 max_iter = 100，可配置
 - 每轮迭代后自动验证答案
 
 ### 3. 答案格式化

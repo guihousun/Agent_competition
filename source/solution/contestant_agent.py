@@ -650,14 +650,22 @@ class ContestantAgent:
 
             try:
                 checker = json.loads(checker_result)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("answer_checker returned invalid JSON") from exc
+            except json.JSONDecodeError:
+                if fix_round + 1 < max_fix_rounds:
+                    continue
+                return candidate
+            if not isinstance(checker, dict):
+                if fix_round + 1 < max_fix_rounds:
+                    continue
+                return candidate
 
             # Use cleaned_answer if available (checker strips Thought/Action/Observation)
             cleaned = checker.get("cleaned_answer", candidate)
             overall_valid = checker.get("overall_valid")
             if not isinstance(overall_valid, bool):
-                raise RuntimeError("answer_checker omitted boolean overall_valid")
+                if fix_round + 1 < max_fix_rounds:
+                    continue
+                return candidate
 
             if overall_valid:
                 return cleaned

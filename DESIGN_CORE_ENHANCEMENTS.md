@@ -258,9 +258,9 @@ SQLite FTS5 全文搜索，BM25 排序，多文档索引。
 | MODEL_API_KEY | - | API Key |
 | MODEL_NAME | - | 模型名称 |
 | AGENT_DEMO_MAX_ITER | 100 | 最大迭代次数 |
-| AGENT_DEMO_TIMEOUT_SECONDS | 300 | 模型请求超时时间 |
+| AGENT_DEMO_TIMEOUT_SECONDS | 600 | 模型请求超时时间 |
 | AGENT_DEMO_TOOL_OUTPUT_MAX_CHARS | 65536 | 单次工具结果写入模型历史的最大字符数 |
-| AGENT_DEMO_STREAM | false | 流式输出 |
+| AGENT_DEMO_STREAM | true | 流式输出 |
 
 ---
 

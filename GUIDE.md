@@ -25,8 +25,8 @@ cp .env.example .env
 # MODEL_CHAT_COMPLETIONS_URL=https://coding.dashscope.aliyuncs.com/v1/chat/completions
 # MODEL_API_KEY=sk-xxx
 # MODEL_NAME=qwen3.6-plus
-# AGENT_DEMO_TIMEOUT_SECONDS=600  # 10 分钟
-# AGENT_DEMO_STREAM=true  # 流式输出
+# AGENT_DEMO_TIMEOUT_SECONDS=600  # 比赛默认值，10 分钟
+# AGENT_DEMO_STREAM=true  # 比赛默认值，流式输出
 ```
 
 ---
@@ -175,10 +175,11 @@ MODEL_API_KEY=sk-xxx
 MODEL_NAME=qwen3.6-plus
 
 # 性能调优
-AGENT_DEMO_MAX_ITER=8          # 最大迭代次数
+AGENT_DEMO_MAX_ITER=100        # 最大迭代次数
 AGENT_DEMO_TEMPERATURE=0.2     # 温度参数
-AGENT_DEMO_TIMEOUT_SECONDS=600 # 请求超时（秒）
-AGENT_DEMO_STREAM=true         # 流式输出
+AGENT_DEMO_TIMEOUT_SECONDS=600 # 比赛默认值，请求超时（秒）
+AGENT_DEMO_STREAM=true         # 比赛默认值，流式输出
+AGENT_DEMO_MAX_FIX_ROUNDS=2    # 答案校正轮数
 
 # 高级选项
 AGENT_DEMO_USE_LLM=true         # 是否使用 LLM
@@ -277,10 +278,11 @@ for q in d['questions']:
 AGENT_DEMO_MAX_ITER=4  # 减少迭代，加快调试
 ```
 
-### 3. 关闭流式输出
+### 3. 保持比赛流式配置
 
 ```env
-AGENT_DEMO_STREAM=false  # 非流式（更稳定）
+AGENT_DEMO_STREAM=true
+AGENT_DEMO_TIMEOUT_SECONDS=600
 ```
 
 ---
@@ -292,7 +294,8 @@ AGENT_DEMO_STREAM=false  # 非流式（更稳定）
 A: 
 1. 检查文件路径是否正确
 2. 减少 `AGENT_DEMO_MAX_ITER`
-3. 增加 `AGENT_DEMO_TIMEOUT_SECONDS`
+3. 确认 `AGENT_DEMO_TIMEOUT_SECONDS=600`
+4. 确认 `AGENT_DEMO_STREAM=true`
 
 ### Q: 答案为空？
 

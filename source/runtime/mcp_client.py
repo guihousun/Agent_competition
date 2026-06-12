@@ -160,6 +160,16 @@ class LocalMCPClient:
             Path(path).resolve()
             for path in runtime_context.get("allowed_file_paths", [])
         ]
+        if not target.exists() and not Path(raw_path).is_absolute():
+            candidates = [
+                (allowed / raw_path).resolve()
+                for allowed in allowed_paths
+                if allowed.is_dir() and (allowed / raw_path).resolve().is_file()
+            ]
+            if len(candidates) == 1:
+                target = candidates[0]
+            elif len(candidates) > 1:
+                raise PermissionError(f"File path is ambiguous within declared directories: {raw_path}")
         if not any(self._is_allowed_file_target(target=target, allowed=allowed) for allowed in allowed_paths):
             raise PermissionError(f"File is not declared in the question: {raw_path}")
         if not target.exists():
