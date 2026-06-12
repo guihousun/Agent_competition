@@ -1,0 +1,22 @@
+[
+  {
+    "id": "mock_direct_001",
+    "answer": "mock demo ready"
+  },
+  {
+    "id": "mock_file_001",
+    "answer": "mock-file-read-ok"
+  },
+  {
+    "id": "mock_mcp_001",
+    "answer": "mock-order-lookup-ok"
+  },
+  {
+    "id": "mock_skill_001",
+    "answer": "mock-summary-skill-ok"
+  },
+  {
+    "id": "mock_sub_agent_001",
+    "answer": "mock-review-agent-ok"
+  }
+]
