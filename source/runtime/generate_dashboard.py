@@ -455,6 +455,22 @@ body {
   color: var(--text-secondary);
 }
 
+.answer-preview {
+  flex: 1;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  color: var(--accent-cyan);
+  background: rgba(57, 210, 192, 0.08);
+  padding: 4px 10px;
+  border-radius: 4px;
+  margin: 0 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
+  border-left: 2px solid var(--accent-cyan);
+}
+
 /* Question Body */
 .question-body {
   display: none;
@@ -1038,12 +1054,14 @@ function renderQuestions(data) {
     }).join('');
 
     const isError = q.status === 'error';
+    const answerPreview = q.answer ? (q.answer.length > 80 ? q.answer.slice(0, 80) + '...' : q.answer) : '';
 
     return `
       <div class="question-card" id="q-${escapeHtml(q.id)}" data-search="${escapeHtml(q.id)} ${spans.map(s => escapeHtml(s.data?.tool_name || '')).join(' ')}">
         <div class="question-header" onclick="this.parentElement.classList.toggle('expanded')">
           <span class="chevron">▶</span>
           <span class="qid">Q${i + 1}: ${escapeHtml(q.id)}</span>
+          ${answerPreview ? `<div class="answer-preview">${escapeHtml(answerPreview)}</div>` : ''}
           <div class="meta">
             <span class="status-badge ${q.status}">${q.status}</span>
             <span class="duration-badge">${fmt(q.duration_ms)}</span>
