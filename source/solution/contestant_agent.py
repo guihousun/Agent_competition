@@ -301,7 +301,7 @@ class ContestantAgent:
             # Context compression: when approaching 256k limit, compress older messages
             if should_compress(messages, limit=200_000):
                 messages[:] = await compress_messages(
-                    messages, keep_recent=6, target_tokens=150_000,
+                    messages, keep_recent=10, target_tokens=150_000,
                     client=client,
                 )
 

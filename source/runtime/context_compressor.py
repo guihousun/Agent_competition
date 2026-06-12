@@ -159,21 +159,31 @@ async def _llm_compress(
         elif not isinstance(content, str):
             content = str(content)
 
-        if len(content) > 400:
-            content = content[:400] + "..."
+        if len(content) > 800:
+            content = content[:800] + "..."
 
         prefix = f"[{role}:{name}]" if name else f"[{role}]"
         formatted.append(f"{prefix} {content}")
 
+    # Limit total context sent to LLM
     conversation = "\n".join(formatted)
+    if len(conversation) > 12000:
+        conversation = conversation[:12000] + "\n...[remaining messages truncated]"
 
     # Make a lightweight LLM call
     compress_messages_list = [
         {
             "role": "user",
             "content": (
-                "请将以下对话历史压缩为简洁摘要。保留关键事实、数据和决策，丢弃工具调用细节和重复内容。\n"
-                "用 3-5 个要点概括，每个要点一行。直接输出摘要，不要解释。\n\n"
+                "请将以下对话历史压缩为详细摘要。\n\n"
+                "要求：\n"
+                "- 保留每一步操作的结果（读了什么文件、查了什么数据、得到了什么结论）\n"
+                "- 保留所有关键数据（ID、数值、状态、名称）\n"
+                "- 保留工具返回的重要内容（CSV 行数、SQL 结果、API 响应）\n"
+                "- 保留已做出的决策和判断\n"
+                "- 丢弃：重复内容、工具调用的原始参数、失败后重试的中间步骤\n\n"
+                "按时间顺序列出，每步一行。尽量详细，不要遗漏关键信息。\n"
+                "直接输出摘要，不要解释。\n\n"
                 f"{conversation}"
             ),
         }
