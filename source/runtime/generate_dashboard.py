@@ -114,7 +114,6 @@ _DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="10">
 <title>Agent Contest Dashboard</title>
 <style>
 /* ============================================================
@@ -1240,6 +1239,30 @@ function renderCapabilities(data) {
 }
 
 render(TRACES);
+
+// ============================================================
+// Live update — fetch traces.json every 10s, re-render only if changed
+// ============================================================
+let _lastJson = JSON.stringify(TRACES);
+let _polling = true;
+
+async function pollForUpdates() {
+  if (!_polling) return;
+  try {
+    const resp = await fetch('traces.json?_t=' + Date.now(), { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const json = JSON.stringify(data);
+    if (json !== _lastJson) {
+      _lastJson = json;
+      render(data);
+    }
+  } catch {}
+  setTimeout(pollForUpdates, 10000);
+}
+
+// Start polling after initial render
+setTimeout(pollForUpdates, 10000);
 </script>
 </body>
 </html>"""
