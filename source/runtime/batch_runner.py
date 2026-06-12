@@ -71,7 +71,9 @@ class BatchRunner:
 
     async def _run_one(self, *, question: dict[str, Any], question_dir: Path) -> dict[str, Any]:
         qid = str(question.get("id", "unknown"))
-        trace = begin_question_trace(qid)
+        title = str(question.get("title", ""))
+        description = str(question.get("description", ""))
+        trace = begin_question_trace(qid, title=title, description=description)
         try:
             with tempfile.TemporaryDirectory(prefix=f"agent_question_{qid}_") as temp_dir:
                 context = self._build_context(

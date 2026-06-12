@@ -39,6 +39,8 @@ class QuestionTrace:
     """Trace for a single question."""
 
     id: str
+    title: str = ""
+    description: str = ""
     status: str = "running"  # "running" | "success" | "error"
     answer: str = ""
     error: str | None = None
@@ -154,9 +156,9 @@ def get_active_trace() -> QuestionTrace | None:
     return _active_trace.get()
 
 
-def begin_question_trace(question_id: str) -> QuestionTrace:
+def begin_question_trace(question_id: str, title: str = "", description: str = "") -> QuestionTrace:
     """Start a new question trace and set it as the active context."""
-    trace = QuestionTrace(id=question_id, _start_time=time.monotonic())
+    trace = QuestionTrace(id=question_id, title=title, description=description[:500], _start_time=time.monotonic())
     _active_trace.set(trace)
     return trace
 

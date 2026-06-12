@@ -479,6 +479,17 @@ body {
 
 .question-card.expanded .question-body { display: block; }
 
+.question-desc {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 /* Span list */
 .span-list {
   padding: 0;
@@ -979,7 +990,7 @@ function renderWaterfall(data) {
       <div class="waterfall-row" data-qid="${escapeHtml(q.id)}" onclick="scrollToQuestion('${escapeHtml(q.id)}')">
         <div class="wf-label">
           <span class="wf-status ${q.status}"></span>
-          ${escapeHtml(q.id)}
+          ${escapeHtml(q.id)}${q.title ? '<br><small>' + escapeHtml(q.title) + '</small>' : ''}
         </div>
         <div class="wf-bar-container">
           <div class="wf-bar">${segments}</div>
@@ -1057,10 +1068,10 @@ function renderQuestions(data) {
     const answerPreview = q.answer ? (q.answer.length > 80 ? q.answer.slice(0, 80) + '...' : q.answer) : '';
 
     return `
-      <div class="question-card" id="q-${escapeHtml(q.id)}" data-search="${escapeHtml(q.id)} ${spans.map(s => escapeHtml(s.data?.tool_name || '')).join(' ')}">
+      <div class="question-card" id="q-${escapeHtml(q.id)}" data-search="${escapeHtml(q.id)} ${escapeHtml(q.title || '')} ${spans.map(s => escapeHtml(s.data?.tool_name || '')).join(' ')}">
         <div class="question-header" onclick="this.parentElement.classList.toggle('expanded')">
           <span class="chevron">▶</span>
-          <span class="qid">Q${i + 1}: ${escapeHtml(q.id)}</span>
+          <span class="qid">Q${i + 1}: ${escapeHtml(q.id)}${q.title ? ' — ' + escapeHtml(q.title) : ''}</span>
           ${answerPreview ? `<div class="answer-preview">${escapeHtml(answerPreview)}</div>` : ''}
           <div class="meta">
             <span class="status-badge ${q.status}">${q.status === 'success' ? 'completed' : q.status}</span>
@@ -1069,6 +1080,7 @@ function renderQuestions(data) {
           </div>
         </div>
         <div class="question-body">
+          ${q.description ? `<div class="question-desc">${escapeHtml(q.description)}</div>` : ''}
           <div class="span-list">${spanHtml}</div>
           ${totalT > 0 ? `
           <div style="padding:8px 16px 4px 32px">
