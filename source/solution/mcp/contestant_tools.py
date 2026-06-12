@@ -184,73 +184,8 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             )
 
     @register_tool(
-        name="resolve_path",
-        description="Resolve a file path relative to project root or question files directory. Returns absolute path.",
-        input_schema=object_schema(
-            {
-                "path": {
-                    "type": "string",
-                    "description": "File path to resolve (relative or absolute)",
-                },
-                "base_dir": {
-                    "type": "string",
-                    "description": "Base directory (default: project root)",
-                    "default": "",
-                },
-            },
-            ["path"],
-        ),
-        kind="mcp",
-        risk="low",
-    )
-    def resolve_path(path: str, base_dir: str = "") -> str:
-        """Resolve file path and return absolute path."""
-        p = Path(path)
-
-        # If already absolute and exists, return as-is
-        if p.is_absolute() and p.exists():
-            return json.dumps({"absolute_path": str(p), "exists": True}, ensure_ascii=False)
-
-        # Try relative to base_dir
-        if base_dir:
-            resolved = Path(base_dir) / p
-            if resolved.exists():
-                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
-
-        # Try relative to CWD
-        resolved = Path.cwd() / p
-        if resolved.exists():
-            return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
-
-        # Try relative to project root (parent of source/)
-        project_root = Path.cwd()
-        if (project_root / "source").exists():
-            resolved = project_root / p
-            if resolved.exists():
-                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
-
-        # Try relative to question files directory (source/examples/files/)
-        files_dir = project_root / "source" / "examples" / "files"
-        if files_dir.exists():
-            resolved = files_dir / p
-            if resolved.exists():
-                return json.dumps({"absolute_path": str(resolved), "exists": True}, ensure_ascii=False)
-
-        # Not found - return search paths for debugging
-        return json.dumps({
-            "absolute_path": None,
-            "exists": False,
-            "searched_paths": [
-                str(Path.cwd() / p),
-                str(project_root / p),
-                str(files_dir / p),
-            ],
-            "cwd": str(Path.cwd()),
-        }, ensure_ascii=False)
-
-    @register_tool(
         name="zip_extract",
-        description="Extract ZIP file contents. Returns list of extracted files with inner ZIP detection.",
+        description="Extract ZIP file contents. Returns list of extracted files.",
         input_schema=object_schema(
             {
                 "zip_path": {
@@ -269,20 +204,10 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
         risk="medium",
     )
     def zip_extract(zip_path: str, output_dir: str = "") -> str:
-        """Extract ZIP file and return detailed file list."""
-        # Resolve relative paths from current working directory
+        """Extract ZIP file and return list of extracted files."""
         zip_path = Path(zip_path)
-        if not zip_path.is_absolute():
-            # Try relative to CWD first
-            if not zip_path.exists():
-                # Try relative to project root (parent of source/)
-                project_root = Path.cwd()
-                alt_path = project_root / zip_path
-                if alt_path.exists():
-                    zip_path = alt_path
-
         if not zip_path.exists():
-            return json.dumps({"error": f"ZIP file not found: {zip_path}. CWD: {Path.cwd()}"}, ensure_ascii=False)
+            return json.dumps({"error": f"ZIP file not found: {zip_path}"}, ensure_ascii=False)
 
         if not output_dir:
             output_dir = tempfile.mkdtemp(prefix="zip_extract_")
@@ -291,16 +216,10 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             output_dir.mkdir(parents=True, exist_ok=True)
 
         extracted = []
-        inner_zips = []
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(output_dir)
-                for name in zf.namelist():
-                    file_path = Path(output_dir) / name
-                    extracted.append(str(file_path))
-                    # Detect inner ZIP files
-                    if name.lower().endswith('.zip'):
-                        inner_zips.append(str(file_path))
+                extracted = [str(Path(output_dir) / name) for name in zf.namelist()]
         except zipfile.BadZipFile:
             return json.dumps({"error": f"Invalid ZIP file: {zip_path}"}, ensure_ascii=False)
         except Exception as exc:
@@ -311,8 +230,6 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
                 "output_dir": str(output_dir),
                 "files": extracted,
                 "count": len(extracted),
-                "inner_zips": inner_zips,
-                "has_inner_zip": len(inner_zips) > 0,
             },
             ensure_ascii=False,
             indent=2,

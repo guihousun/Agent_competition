@@ -1,194 +1,121 @@
-# Agent Contest - Capability Gap Analysis
+# Agent Contest - 能力差距分析（更新版）
 
-## 比赛题目需求 vs Demo 现有能力对比
+## 比赛题目（来自 comoetition-tests 仓库）
 
-### 一、文本处理类（2 题）
+| ID | 题目 | 场景 | 难度 | 当前覆盖 |
+|----|------|------|------|----------|
+| 1_1 | 客服消息日期提取与标准化 | 文本处理 | 1 | ✅ 已测试通过 |
+| 1_3 | 系统问题定位与根因判断 | 多模态缺陷定位 | 3 | ⚠️ 需要多文件关联分析 |
+| 1_4 | 接口测试结果识别 | 接口服务验证 | 2 | ⚠️ 需要 :18081 服务 |
+| 2_1 | 采购数据清洗与汇总 | 数据分析 | 2 | ✅ 工具就绪 |
+| 2_2 | 敏感信息扫描 | 压缩包+模式匹配 | 2 | ✅ 工具就绪 |
+| 2_3 | Java 个人所得税计算器 | 代码修复 | 2 | ✅ 工具就绪 |
+| 3_2 | 采购 PO 合规审计 | 规则校验 | 3 | ⚠️ 复杂规则 |
+| 3_3 | IDE 插件 FSE 数字人问答 | 多源知识检索 | 3 | ⚠️ 需要 :18089 服务 |
 
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 1.1 日期提取标准化 | 多语言日志解析、日期格式统一、正则匹配 | ✅ LLM 可处理 | 无 |
-| 1.2 敏感信息扫描 | **ZIP 解压**、多模式正则扫描（手机/邮箱/身份证/API Key） | ❌ 无 ZIP 解压工具 | **需补充 `zip_extract`** |
-
-**缺失工具**: `zip_extract` - 解压 ZIP 文件到临时目录
-
----
-
-### 二、编程规范类（2 题）
-
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 2.1 华为规范问答 | **规范文档检索**、知识问答 |  无文档检索能力 | **需 Skill: `huawei_coding_standard`** |
-| 2.2 代码审计 | **代码静态分析**、安全漏洞检测 | ❌ 无代码分析工具 | **需 Skill: `code_auditor`** |
-
-**缺失能力**: 
-- 华为编程规范知识库（可作为 Skill 的 references/）
-- 代码静态分析工具（可调用外部 linter 或 LLM 分析）
+**直接可用**: 5/8（1_1, 2_1, 2_2, 2_3 + 部分 1_3）  
+**需要本地服务**: 3/8（1_4, 3_3, 部分 1_3）  
+**复杂规则**: 1/8（3_2）
 
 ---
 
-### 三、系统分析类（2 题）
+## 当前能力覆盖
 
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 3.1 依赖鉴定与风险 | **跨文件依赖分析**、证据链推理 | ⚠️ LLM 可推理但无工具辅助 | **需 Skill: `dependency_analyzer`** |
-| 3.2 API 测试场景 | **HTTP 客户端**、API 认证、响应验证 | ❌ 无 HTTP 工具 | **需补充 `http_request`** |
+### ✅ 完全覆盖（5 个）
 
-**缺失工具**: `http_request` - 发送 HTTP 请求（GET/POST/PUT/DELETE）
+| 能力 | 工具/Skill | 测试状态 |
+|------|------------|----------|
+| 日期提取 | text_read_file + code_execute | ✅ 1_1 通过 |
+| 数据聚合 | csv_read + csv_aggregate | ✅ 测试通过 |
+| 代码执行 | code_execute | ✅ 2_3 可行 |
+| 压缩包解压 | zip_extract + tar_extract | ✅ 4 层嵌套通过 |
+| 文件处理 | text_read_file | ✅ |
 
----
+### ⚠️ 部分覆盖（3 个）
 
-### 四、数据清洗类（2 题）
+| 能力 | 缺口 | 解决方案 |
+|------|------|----------|
+| 接口测试 | 需要 :18081 本地服务 | http_request 工具就绪 |
+| 多模态分析 | 需要多文件证据链 | LLM 推理 + 结构化输出 |
+| 知识检索 | 需要 :18089 Wiki 服务 | document_searcher + http_request |
 
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 4.1 采购数据清洗 | **CSV 读写**、数据聚合、金额计算 | ❌ 无 CSV 工具 | **需补充 `csv_read`/`csv_aggregate`** |
-| 4.2 PO 合规审计 | CSV 筛选、**合规规则校验**、审批流验证 | ❌ 无合规检查工具 | **需 Skill: `compliance_checker`** |
+### ❌ 缺失能力
 
-**缺失工具**: 
-- `csv_read` - 读取 CSV 文件为 JSON
-- `csv_aggregate` - 按列聚合（SUM/AVG/COUNT/GROUP BY）
-- `data_filter` - 按条件筛选数据行
-
----
-
-### 五、代码精修类（1 题）
-
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 5.1 Java 源码修复 | **Java 编译**、**运行测试**、错误定位 | ❌ 无代码执行工具 | **需补充 `code_execute`** |
-
-**缺失工具**: `code_execute` - 执行代码（Python/Java/Node.js）并返回输出
+| 能力 | 题目 | 优先级 |
+|------|------|--------|
+| 多模态图片分析 | 1_3, 6.1 | P2 |
+| 上下文规则引擎 | 3_2 | P1 |
+| 长期记忆/对话管理 | 3_3 | P1 |
 
 ---
 
-### 六、智能推荐类（1 题）
+## 工具能力矩阵
 
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 6.1 图片分类推理 | **图片读取**、**视觉模型推理**、批量处理 | ❌ 无多模态能力 | **需多模态模型 + `image_read`** |
-
-**缺失能力**:
-- 多模态模型支持（qwen-vl-max 或类似）
-- `image_read` - 读取图片为 base64
-- 批量推理脚本（可作为 Skill）
-
----
-
-### 七、智能问答类（1 题）
-
-| 题目 | 核心需求 | Demo 现状 | 差距 |
-|------|----------|-----------|------|
-| 7.1 IDE 插件问答 | **本地服务调用**（:18080）、上下文构建 | ⚠️ 有 `http_request` 后可解决 | 依赖 `http_request` |
+| 工具 | 文件 | 网络 | 代码 | 数据 | 多模态 |
+|------|------|------|------|------|--------|
+| text_read_file | ✅ | ❌ | ❌ | ❌ | ❌ |
+| zip_extract | ✅ | ❌ | ❌ | ❌ | ❌ |
+| tar_extract | ✅ | ❌ | ❌ | ❌ | ❌ |
+| csv_read | ✅ | ❌ | ❌ | ✅ | ❌ |
+| csv_aggregate | ❌ | ❌ | ❌ | ✅ | ❌ |
+| code_execute | ⚠️ | ❌ | ✅ | ⚠️ | ⚠️ |
+| http_request | ❌ | ✅ | ❌ | ❌ | ❌ |
+| answer_formatter | ❌ | ❌ | ❌ | ❌ | ❌ |
+| skill_load/run | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 ---
 
-## 优先级排序
+## Skills 能力矩阵
 
-### P0 - 必须补充（影响 50%+ 题目）
+| Skill | 来源 | 数据 | 文档 | 代码 | 多模态 |
+|-------|------|------|------|------|--------|
+| mock_summary_skill | 示例 | ❌ | ❌ | ❌ | ❌ |
+| data_analyzer | 自建 | ✅ | ❌ | ❌ | ⚠️ |
+| document_searcher | Ansvar | ✅ | ✅ | ❌ | ⚠️ |
 
-| 工具/Skill | 影响题目 | 实现方式 |
-|------------|----------|----------|
-| `http_request` | 3.2, 7.1 | 内置工具（contestant_tools.py） |
-| `zip_extract` | 1.2 | 内置工具 |
-| `csv_read` + `csv_aggregate` | 4.1, 4.2 | 内置工具 |
-| `code_execute` | 5.1 | 内置工具 |
+---
 
-### P1 - 重要补充（提升解题质量）
+## 缺口优先级
 
-| 工具/Skill | 影响题目 | 实现方式 |
-|------------|----------|----------|
-| Skill: `huawei_coding_standard` | 2.1 | Skill 包（references/ 放规范文档） |
-| Skill: `code_auditor` | 2.2 | Skill 包（调用 LLM + 规则库） |
-| Skill: `compliance_checker` | 4.2 | Skill 包（合规规则 + 校验逻辑） |
+### P0 - 已完成
+- ✅ 答案格式化（answer_formatter）
+- ✅ 自检循环
+- ✅ 通用 ReAct 框架
+- ✅ 压缩包处理（ZIP + TAR）
+- ✅ Excel 支持
+
+### P1 - 需要补充
+- ⏳ 多源知识检索优化
+- ⏳ 合规审计规则引擎
+- ⏳ 多模态图片理解
 
 ### P2 - 可选增强
-
-| 工具/Skill | 影响题目 | 实现方式 |
-|------------|----------|----------|
-| `image_read` + 多模态模型 | 6.1 | 内置工具 + 模型切换 |
-| Skill: `dependency_analyzer` | 3.1 | Skill 包（代码解析 + 依赖图） |
+- ⏳ 长期记忆管理
+- ⏳ 向量搜索（语义理解）
+- ⏳ 并行工具调用
 
 ---
 
-## 实施方案
+## 已知问题
 
-### 阶段 1: 补充内置工具（1-2 小时）
-
-在 `source/solution/mcp/contestant_tools.py` 中添加：
-
-```python
-@register_tool(name="http_request", ...)
-def http_request(url, method, headers, body, timeout=30) -> str:
-    """发送 HTTP 请求，返回响应状态码 + 正文"""
-
-@register_tool(name="zip_extract", ...)
-def zip_extract(zip_path, output_dir=None) -> str:
-    """解压 ZIP 文件，返回解压后的文件列表"""
-
-@register_tool(name="csv_read", ...)
-def csv_read(path, max_rows=1000) -> str:
-    """读取 CSV 文件，返回 JSON 数组"""
-
-@register_tool(name="csv_aggregate", ...)
-def csv_aggregate(data, group_by, operation, column) -> str:
-    """CSV 数据聚合：SUM/AVG/COUNT/MIN/MAX"""
-
-@register_tool(name="code_execute", ...)
-def code_execute(language, code, stdin="", timeout=30) -> str:
-    """执行代码（python/java/node），返回 stdout/stderr/exit_code"""
-```
-
-### 阶段 2: 构建 Skill 包（2-3 小时）
-
-为每个 Skill 创建：
-- `SKILL.md` - 使用说明 + 示例
-- `skill.json` - 元数据
-- `scripts/run.py` - 执行逻辑
-- `references/` - 参考文档（如华为规范）
-
-### 阶段 3: 优化 System Prompt（30 分钟）
-
-在 `contestant_agent.py` 的 `SYSTEM_PROMPT` 中添加：
-- 任务类型识别策略
-- 工具选择指南
-- 多步骤任务编排模板
-
-### 阶段 4: 端到端测试（1 小时）
-
-为每类题目创建 mock question，验证完整 pipeline。
+1. **路径解析**：Agent 容易尝试多种路径，需要在 System Prompt 中强化
+2. **重复调用**：某些情况下会重复调用相同工具，ReAct 框架已部分缓解
+3. **超时控制**：复杂任务可能超过 10 分钟，需要降级策略
+4. **格式验证**：JSON 字段顺序仍可能出错，需要 answer_formatter 兜底
 
 ---
 
-## 现有能力复用
+## 测试覆盖
 
-以下现有能力可直接用于比赛：
+| 测试 | 状态 | 备注 |
+|------|------|------|
+| Mock 5 题 | ✅ | 基础能力 |
+| 数据分析 3 题 | ✅ | 简单案例 |
+| 复杂任务 1 题 | ✅ | 6 步多工具 |
+| 压缩包 2 题 | ✅ | ZIP + TAR |
+| Excel/CSV 2 题 | ✅ | data_analyzer |
+| 嵌套 ZIP 1 题 | ✅ | 4 层嵌套 |
+| ReAct 简单测试 | ✅ | 框架验证 |
+| 真实比赛题 1_1 | ✅ | 日期提取 |
 
-| 能力 | 应用场景 |
-|------|----------|
-| LLM 推理（qwen3.6-plus） | 所有题目的核心推理 |
-| `text_read_file` | 读取题目附件（文本文件） |
-| `skill_load` / `skill_run` | 调用 Skill 包 |
-| `agent_delegate` | 复杂任务委派给 Sub-agent |
-| 工具调用循环（max 6 次） | 多步骤任务编排 |
-| JSON Tool Loop fallback | 兼容不同模型网关 |
-
----
-
-## 风险评估
-
-| 风险 | 影响 | 缓解措施 |
-|------|------|----------|
-| 本地服务不可用（18080/18081） | 3.2, 7.1 无法完成 | 添加超时 + 错误处理 |
-| 多模态模型不可用 | 6.1 无法完成 | 降级为文本描述 + LLM 推理 |
-| 代码执行超时 | 5.1 卡住 | 严格 timeout（30s） |
-| CSV 文件过大 | 4.1, 4.2 内存溢出 | `max_rows` 限制 + 流式处理 |
-
----
-
-## 下一步行动
-
-1. **立即实施**: P0 内置工具（http_request, zip_extract, csv_*, code_execute）
-2. **随后实施**: P1 Skill 包（huawei_coding_standard, code_auditor, compliance_checker）
-3. **最后优化**: System Prompt + 端到端测试
-
-预计总工时: **4-6 小时**
+**总计**: 17 个测试用例，全部通过

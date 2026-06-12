@@ -1,0 +1,32 @@
+[
+  {
+    "id": "1_1",
+    "title": "客服消息日期提取与标准化",
+    "description": "附件文件每行是一条用户消息，消息中有对日期的相关描述。\n\n请从每条消息中解析出对应的日期，转换为'yyyy-mm-dd'格式，按行顺序返回所有日期，日期之间用英文逗号分隔。\n\n【返回格式示例】2026-05-06,2026-05-07",
+    "files": ["files/customer_date_messages.txt"],
+    "level": 1,
+    "tools": ["text_read_file", "code_execute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  },
+  {
+    "id": "2_2",
+    "title": "敏感信息扫描",
+    "description": "附件是一个压缩包（sensitive_data_2_1.zip），压缩包内包含多层目录结构，目录中可能有.txt、.log、.tar、.png/.jpg 等文件。\n\n请扫描压缩包内所有文件中的敏感信息，敏感信息类型包括：\n1) 手机号：以 1 开头的 11 位数字\n2) 邮箱地址：符合 user@domain.com 格式\n3) 身份证号：18 位，最后一位可能为 X\n4) API Key：以 sk-开头的字符串（长度不定）\n\n汇总敏感信息数量，返回格式：'手机号，邮箱，身份证，APIKey'，用英文逗号分隔。\n\n【返回示例】\n检测到 3 个手机号、2 个邮箱、1 个身份证、1 个 API Key，输出：3,2,1,1",
+    "files": ["files/sensitive_data_2_1.zip"],
+    "level": 2,
+    "tools": ["zip_extract", "tar_extract", "text_read_file", "code_execute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  },
+  {
+    "id": "2_3",
+    "title": "Java 个人所得税计算器",
+    "description": "附件是一份半成品 Java 源码（JavaSource_7_1.java），程序功能是计算个人所得税：输入税前工资（月薪），输出应缴纳个人所得税。\n\n【你的任务】\n1. 执行 java -version 命令，检测 Java 环境版本\n2. 阅读源码中的注释说明，了解计算规则\n3. 修复源码中的错误\n4. 编译并运行程序，验证示例输入输出\n5. 使用 10 个隐藏用例测试，记录输出结果\n\n【示例输入输出】\n3000 -> 0.00\n8000 -> 90.00\n15000 -> 590.00\n30000 -> 2340.00\n100000 -> 27440.00\n\n【隐藏用例】（以下输入按顺序执行，对应 10 个输出）\n5000\n12000\n25000\n35000\n55000\n60000\n80000\n90000\n150000\n500000\n\n【返回格式】\n先输出 java -version 的完整输出（只需包含版本号，如 openjdk version \"17.0.2\"）\n然后按顺序输出 10 个隐藏用例的结果，用逗号分隔\n\n【返回格式示例】\nopenjdk version \"17.0.2\",隐藏用例 1 答案，隐藏用例 2 答案",
+    "files": ["files/JavaSource_7_1.java"],
+    "level": 2,
+    "tools": ["code_execute", "text_read_file", "answer_formatter"],
+    "skills": [],
+    "sub_agents": []
+  }
+]
