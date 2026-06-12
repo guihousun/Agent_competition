@@ -1,38 +1,61 @@
 # Data Reader Sub-agent
 
-数据预读子代理。读取原始数据文件，返回结构化摘要或精准查询链，避免大量原始数据污染主 agent 上下文。
+数据接口层。不做初筛，不做假设——返回完整数据全貌，由主 agent 决定查什么。
 
-## 职责
+## 设计原则
 
-- 读取 CSV/DB/日志/邮件等大文件
-- 返回数据摘要（结构、关键发现、相关片段）
-- 或返回精准查询链（精确的工具调用步骤）
+- **不筛选**：overview 模式返回全部字段、值域、关联，不做任何过滤
+- **不假设**：不基于题目猜测主 agent 需要什么
+- **两阶段**：先全貌（overview），再精确查询（query）
 
-## 使用方式
+## 阶段 1：数据探查
 
 ```python
 agent_delegate(
     agent_name="data_reader",
-    task="具体问题，如：找出所有金额超过5万的PO",
-    context_text="文件路径，如：files/采购PO合规审计/purchase_orders_raw.csv"
+    task="探查数据结构",
+    context_text="files/data.csv"
 )
 ```
 
+返回：schema、行数、字段类型、值域范围、枚举值、文件间关联、数据问题
+
+## 阶段 2：精确查询
+
+```python
+agent_delegate(
+    agent_name="data_reader",
+    task="找出 status=已完成 且 amount>=50000 的所有行，返回 po_id, vendor_id, amount",
+    context_text="files/data.csv"
+)
+```
+
+返回：查询结果数组（≤50条）、结果总数、注意事项
+
 ## 返回格式
 
-**模式 A：摘要**（小数据或需要全貌）
+**overview 模式**：
 ```json
-{"mode": "summary", "data_overview": "...", "key_findings": [...], "relevant_data": [...]}
+{
+  "mode": "overview",
+  "data_landscape": {
+    "filename.csv": {
+      "structure": "45行 x 8列",
+      "fields": [{"name": "po_id", "type": "string", "sample": "PO-001", "unique_count": 45}],
+      "value_ranges": {"status": ["已完成", "草稿", "取消"]},
+      "notable": ["amount 有 3 行为空值"]
+    }
+  },
+  "connections": ["purchase_orders.vendor_id → vendors.vendor_id"]
+}
 ```
 
-**模式 B：查询链**（大数据需要精确定位）
+**query 模式**：
 ```json
-{"mode": "query_chain", "chain": [{"step": 1, "tool": "csv_read", "params": {...}}]}
+{
+  "mode": "query",
+  "result_count": 12,
+  "results": [{"po_id": "PO-001", "amount": 80000}],
+  "caveats": ["currency 字段有混用 CNY/USD 的情况"]
+}
 ```
-
-## 何时使用
-
-- CSV > 50 行
-- SQLite 数据库
-- 多封邮件/日志文件
-- 需要理解数据结构再查询的场景

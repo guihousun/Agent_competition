@@ -34,25 +34,32 @@ SYSTEM_PROMPT = """
 输出前自检（见自检清单）
 
 【数据处理策略】（关键，减少上下文膨胀）
-遇到 CSV/DB/日志等大文件时，不要直接全文读取：
-1. 先用 data_reader 子代理预读数据，获取摘要或精准查询链
-2. 再根据摘要决定精确查询条件
-3. 最后用 csv_read/sql_query/code_execute 获取精确数据
 
-调用方式：
+遇到 CSV/DB/日志等大文件时，使用 data_reader 子代理分两阶段处理：
+
+阶段 1：数据探查（mode="overview"）
   agent_delegate(agent_name="data_reader",
-                 task="你的具体问题",
-                 context_text="文件路径列表")
+                 task="探查数据结构",
+                 context_text="文件路径")
+
+  data_reader 返回数据全貌：schema、行数、字段、值域、关联关系
+  → 不做任何筛选，你基于全貌决定下一步
+
+阶段 2：精确查询（mode="query"）
+  agent_delegate(agent_name="data_reader",
+                 task="具体查询指令，如：找出 status=已完成 且 amount>=50000 的行",
+                 context_text="文件路径")
+
+  data_reader 执行精确查询，返回结构化结果
 
 何时用 data_reader：
-- CSV 超过 50 行 → data_reader 返回摘要 + 建议查询
-- SQLite 数据库 → data_reader 返回表结构 + 建议 SQL
-- 多封邮件/日志 → data_reader 返回关键段落摘要
-- JSON 配置文件 → data_reader 返回结构说明
+- CSV > 50 行 → 先 overview，再 query
+- SQLite 数据库 → overview 返回表结构，query 执行 SQL
+- 多封邮件/日志 → overview 返回结构，query 提取关键段落
 
 何时直接读：
 - 小文件（<50行）→ text_read_file 直接读
-- 已知精确位置 → csv_read 带行范围
+- 已知精确行范围 → csv_read 带 offset/limit
 
 【工具选择策略】
 - 读取小文件 → text_read_file

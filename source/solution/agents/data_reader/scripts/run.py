@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Data Reader Sub-agent - Reads raw data and returns summaries or query chains."""
+"""Data Reader Sub-agent - Data interface layer for the main agent.
+
+Two-phase design:
+  Phase 1: Return data OVERVIEW (schema, counts, field values, structure) — no filtering
+  Phase 2: Execute precise queries as instructed by main agent
+
+The data_reader NEVER does "initial screening" based on the question.
+It always returns the full landscape so the main agent can decide what's relevant.
+"""
 
 import json
 import sys
@@ -18,47 +26,61 @@ def main():
     question = params.get("question", "")
     files = params.get("files", [])
     context_text = params.get("context_text", "")
+    mode = params.get("mode", "overview")  # "overview" or "query"
 
-    # 返回结构化输入，由 LLM 读取数据并生成摘要
-    result = {
-        "task": question,
-        "files_to_read": files,
-        "context": context_text[:2000] if context_text else "",
-        "instruction": (
-            "请读取上述文件，根据任务需求返回以下两种格式之一：\n\n"
-            "【格式 A：数据摘要】适用于需要了解数据全貌的场景\n"
-            "{\n"
-            '  "mode": "summary",\n'
-            '  "data_overview": "数据结构、行列数、字段说明",\n'
-            '  "key_findings": ["与任务相关的关键发现"],\n'
-            '  "relevant_data": ["直接相关的数据片段（精简）"],\n'
-            '  "suggested_queries": ["建议的精确查询步骤"]\n'
-            "}\n\n"
-            "【格式 B：精准查询链】适用于数据量大、需要精确定位的场景\n"
-            "{\n"
-            '  "mode": "query_chain",\n'
-            '  "chain": [\n'
-            "    {\n"
-            '      "step": 1,\n'
-            '      "action": "具体操作（如：读取 CSV 第 X-Y 行）",\n'
-            '      "tool": "使用的工具",\n'
-            '      "params": {"key": "value"},\n'
-            '      "purpose": "这步的目的"\n'
-            "    }\n"
-            "  ],\n"
-            '  "expected_result": "最终期望获得的数据"\n'
-            "}\n\n"
-            "选择依据：\n"
-            "- 数据量小（<100行）或需要全貌理解 → 格式 A\n"
-            "- 数据量大（>100行）或需要精确筛选 → 格式 B\n"
-            "- 邮件/日志等非结构化文本 → 格式 A，提取关键段落\n"
-            "- CSV/DB 等结构化数据 → 格式 B，给出精确查询\n\n"
-            "要求：\n"
-            "- 不要返回原始数据全文，只返回摘要或查询链\n"
-            "- relevant_data 中的数据片段控制在 500 字以内\n"
-            "- 输出纯 JSON，不要解释"
-        ),
-    }
+    if mode == "overview":
+        # Phase 1: 返回数据全貌，不做任何筛选
+        result = {
+            "mode": "overview",
+            "files": files,
+            "instruction": (
+                "请读取上述文件，返回数据全貌。不要做任何筛选或过滤。\n\n"
+                "输出 JSON：\n"
+                "{\n"
+                '  "files_read": ["已读取的文件路径"],\n'
+                '  "data_landscape": {\n'
+                '    "filename": {\n'
+                '      "type": "csv/json/db/txt/log/email",\n'
+                '      "structure": "行数、列数、数据类型",\n'
+                '      "fields": [{"name": "字段名", "type": "类型", "sample": "示例值", "unique_count": 10}],\n'
+                '      "value_ranges": {"数值字段": {"min": 0, "max": 100}, "分类字段": ["值1", "值2"]},\n'
+                '      "notable": ["值得注意的数据特征，如空值、异常值、特殊编码"]\n'
+                "    }\n"
+                "  },\n"
+                '  "connections": ["文件之间的关联关系，如外键、引用"],\n'
+                '  "potential_issues": ["可能影响后续分析的问题，如缺失值、重复行"]\n'
+                "}\n\n"
+                "要求：\n"
+                "- 不要省略任何字段或文件\n"
+                "- 不要基于题目做筛选，题目仅供参考\n"
+                "- value_ranges 列出所有枚举值（如果<20个）或 min/max\n"
+                "- 输出纯 JSON，不要解释"
+            ),
+        }
+    else:
+        # Phase 2: 按主 agent 指令执行精确查询
+        result = {
+            "mode": "query",
+            "query": question,
+            "files": files,
+            "context": context_text[:2000] if context_text else "",
+            "instruction": (
+                "请根据上述查询指令，执行精确的数据查询。\n\n"
+                "输出 JSON：\n"
+                "{\n"
+                '  "query_executed": "实际执行的查询描述",\n'
+                '  "result_count": 10,\n'
+                '  "results": [查询结果数组，控制在 50 条以内],\n'
+                '  "result_summary": "结果的简要说明",\n'
+                '  "caveats": ["需要注意的限制或假设"]\n'
+                "}\n\n"
+                "要求：\n"
+                "- 严格按照查询指令执行，不要擅自扩大或缩小范围\n"
+                "- 如果查询条件不明确，返回所有可能的结果并说明\n"
+                "- results 控制在 50 条以内，超过时说明总数并返回前 50 条\n"
+                "- 输出纯 JSON，不要解释"
+            ),
+        }
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
