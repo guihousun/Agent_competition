@@ -900,3 +900,65 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             }, ensure_ascii=False, indent=2, default=str)
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    @register_tool(
+        name="image_read",
+        description="Read an image file and return base64 for multimodal analysis. Supports PNG, JPG, JPEG, BMP, GIF, WebP. The base64 data will be automatically included in the next LLM call as image content.",
+        input_schema=object_schema(
+            {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the image file",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Question about the image to ask the vision model (e.g., 'What text is shown?', 'Describe the error message').",
+                    "default": "",
+                },
+            },
+            ["path"],
+        ),
+        kind="mcp",
+        risk="low",
+    )
+    def image_read(path: str, question: str = "") -> str:
+        """Read image file and return base64 data for multimodal LLM call."""
+        import base64
+
+        img_path = Path(path)
+        if not img_path.exists():
+            return json.dumps({"error": f"Image file not found: {path}"}, ensure_ascii=False)
+
+        suffix = img_path.suffix.lower()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".bmp": "image/bmp",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        mime_type = mime_map.get(suffix, "image/png")
+        if suffix not in mime_map:
+            return json.dumps({"error": f"Unsupported image format: {suffix}"}, ensure_ascii=False)
+
+        try:
+            with open(img_path, "rb") as f:
+                img_bytes = f.read()
+
+            # Size check (max 10MB)
+            if len(img_bytes) > 10 * 1024 * 1024:
+                return json.dumps({"error": "Image too large (>10MB)"}, ensure_ascii=False)
+
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+            return json.dumps({
+                "__image__": True,
+                "path": str(img_path),
+                "mime_type": mime_type,
+                "base64": img_b64,
+                "question": question or "请详细描述这张图片的内容，包括所有可见的文字、数字、表格、图表、错误信息等。",
+            }, ensure_ascii=False)
+
+        except Exception as exc:
+            return json.dumps({"error": f"Image read failed: {exc}"}, ensure_ascii=False)

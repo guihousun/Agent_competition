@@ -63,6 +63,7 @@ SYSTEM_PROMPT = """
 
 【工具选择策略】
 - 读取小文件 → text_read_file
+- 读取图片（PNG/JPG/BMP/GIF/WebP） → image_read（自动调用视觉模型识别内容）
 - 预读大文件 → data_reader 子代理（agent_delegate）
 - 日期计算（明天/下周X/去年今天/N天后） → date_compute
 - 工作日计算（N 个工作日后） → workday_calc
@@ -100,6 +101,14 @@ SYSTEM_PROMPT = """
                     query="SELECT * FROM messages WHERE content LIKE '%DevPilot%'")
   2. 工具返回结果数组
   3. 基于结果回答
+
+示例 4 - 图片识别（必须用工具）：
+题目："读取 error_screenshot.png 中的错误信息"
+❌ 错误：跳过图片或编造内容
+✓ 正确：
+  1. 调用 image_read(path="error_screenshot.png", question="图片中显示了什么错误信息？")
+  2. 工具返回 {"description": "图片显示 NullPointerException at line 42..."}
+  3. 基于描述回答
 
 【关键原则】
 
@@ -329,14 +338,46 @@ class ContestantAgent:
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id", ""),
-                        "name": tool_name,
-                        "content": tool_result[:12000],
-                    }
-                )
+
+                # Check if this is an image result — inject as multimodal content
+                image_injected = False
+                if tool_name == "image_read":
+                    try:
+                        img_data = json.loads(tool_result)
+                        if img_data.get("__image__"):
+                            # Add tool result with summary
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id", ""),
+                                "name": tool_name,
+                                "content": f"已读取图片: {img_data['path']}",
+                            })
+                            # Inject image as multimodal user message
+                            messages.append({
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": img_data.get("question", "请描述这张图片")},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{img_data['mime_type']};base64,{img_data['base64']}"
+                                        },
+                                    },
+                                ],
+                            })
+                            image_injected = True
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+                if not image_injected:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id", ""),
+                            "name": tool_name,
+                            "content": tool_result[:12000],
+                        }
+                    )
 
         messages.append({"role": "user", "content": "请停止调用工具，直接输出最终答案文本。"})
         completion = await client.create(messages=messages, tools=[], tool_choice="none")
@@ -541,12 +582,20 @@ class ContestantAgent:
         cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         # 去掉 VERIFIED 标记
         cleaned = re.sub(r'\bVERIFIED\b', '', cleaned).strip()
+        # 去掉 ReAct 框架标签（弱模型会把这些输出到答案里）
+        cleaned = re.sub(r'^(Thought|Action|Observation|Final Answer|Answer Checker|自检)[：:]\s*.*$', '', cleaned, flags=re.MULTILINE).strip()
+        # 去掉 "Answer:" 前缀
+        cleaned = re.sub(r'^(Answer|答案)[：:]\s*', '', cleaned).strip()
+
         # 如果最后一行是逗号分隔的值（无空格），只取最后一行
-        lines = cleaned.splitlines()
+        lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
         if lines:
-            last_line = lines[-1].strip()
+            last_line = lines[-1]
             # 检测纯逗号分隔格式（如 PO-001,PO-002,PO-003）
             if re.match(r'^[A-Za-z0-9_\-]+(,[A-Za-z0-9_\-]+)+$', last_line):
+                return last_line
+            # 如果最后一行是短文本（<200字），很可能是最终答案
+            if len(last_line) < 200 and not any(kw in last_line for kw in ['Action:', 'Observation:', 'Thought:']):
                 return last_line
         return cleaned or content.strip()
 
