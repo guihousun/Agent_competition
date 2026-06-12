@@ -1,0 +1,12 @@
+[
+  {
+    "id": "test_answer_checker_001",
+    "title": "答案检查器测试 - 日期计算",
+    "description": "请使用 date_compute 工具计算以下日期：\n\n1. 今天是 2026-05-06，明天是几号\n2. 今天是 2026-05-06，上周四是几号\n3. 今天是 2026-05-06，下周二是几号\n\n每个日期计算后，必须调用 answer_checker 验证结果。\n\n输出格式：逗号分隔的 3 个日期，如：2026-05-07,2026-04-30,2026-05-12",
+    "files": [],
+    "level": 2,
+    "tools": ["date_compute", "answer_formatter"],
+    "skills": [],
+    "sub_agents": ["answer_checker"]
+  }
+]

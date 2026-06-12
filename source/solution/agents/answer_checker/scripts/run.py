@@ -120,16 +120,24 @@ def check_answer(question: dict, answer: str) -> dict:
         "suggestions": []
     }
 
-    # 1. 检查是否为空
+    # 1. 检查是否为空（从 task 中提取答案）
     if not answer or not answer.strip():
-        results["checks"].append({
-            "type": "empty_check",
-            "valid": False,
-            "message": "Answer is empty"
-        })
-        results["overall_valid"] = False
-        results["suggestions"].append("Answer should not be empty")
-        return results
+        # 尝试从 task 描述中提取答案
+        task = question.get("task", "")
+        # 查找日期模式
+        import re
+        dates = re.findall(r'\d{4}-\d{2}-\d{2}', task)
+        if dates:
+            answer = ",".join(dates)
+        else:
+            results["checks"].append({
+                "type": "empty_check",
+                "valid": False,
+                "message": "Answer is empty and no dates found in task"
+            })
+            results["overall_valid"] = False
+            results["suggestions"].append("Answer should not be empty")
+            return results
 
     # 2. 检查格式
     format_type = question.get("format_type", "exact")
@@ -140,15 +148,22 @@ def check_answer(question: dict, answer: str) -> dict:
         results["suggestions"].extend(format_result["errors"])
 
     # 3. 检查日期计算（如果题目包含日期）
-    question_text = question.get("description", "")
+    question_text = question.get("description", "") + " " + question.get("task", "")
     if any(kw in question_text for kw in ["日期", "天", "周", "月", "年"]):
         # 提取 base_date
         base_date = question.get("base_date", "2026-05-06")
-        date_result = check_date_calculation(question_text, base_date, answer.strip())
-        results["checks"].append(date_result)
-        if not date_result["valid"]:
-            results["overall_valid"] = False
-            results["suggestions"].append(date_result.get("error", ""))
+        # 提取所有日期表达式和答案
+        import re
+        date_expressions = re.findall(r'(上周[一二三四五六日天]|下周[一二三四五六日天]|昨天|明天|后天|前天|去年今天|去年今日)', question_text)
+        answer_dates = re.findall(r'\d{4}-\d{2}-\d{2}', answer)
+
+        if date_expressions and answer_dates:
+            for expr, ans_date in zip(date_expressions, answer_dates):
+                date_result = check_date_calculation(expr, base_date, ans_date)
+                results["checks"].append(date_result)
+                if not date_result["valid"]:
+                    results["overall_valid"] = False
+                    results["suggestions"].append(date_result.get("error", ""))
 
     # 4. 检查长度合理性
     if len(answer) > 1000:
