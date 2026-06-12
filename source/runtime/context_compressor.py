@@ -159,16 +159,16 @@ async def _llm_compress(
         elif not isinstance(content, str):
             content = str(content)
 
-        if len(content) > 800:
-            content = content[:800] + "..."
+        if len(content) > 2000:
+            content = content[:2000] + "..."
 
         prefix = f"[{role}:{name}]" if name else f"[{role}]"
         formatted.append(f"{prefix} {content}")
 
     # Limit total context sent to LLM
     conversation = "\n".join(formatted)
-    if len(conversation) > 12000:
-        conversation = conversation[:12000] + "\n...[remaining messages truncated]"
+    if len(conversation) > 50000:
+        conversation = conversation[:50000] + "\n...[remaining messages truncated]"
 
     # Make a lightweight LLM call
     compress_messages_list = [
