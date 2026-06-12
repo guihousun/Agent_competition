@@ -1,0 +1,7 @@
+{
+  "name": "answer_checker",
+  "description": "Specialized sub-agent for answer verification. Checks format compliance, date calculations, and output correctness.",
+  "role": "answer verification specialist",
+  "entrypoint": "scripts/run.py",
+  "timeout_seconds": 30
+}
