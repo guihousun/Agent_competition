@@ -261,6 +261,7 @@ class ContestantAgent:
         # 参赛者主要改这里：
         # - question 是赛方运行器传入的公开题面对象，只包含 id/question/files 等可见字段。
         # - question["files"] 是本题允许读取的文件或目录列表，文件内容不会自动进入上下文。
+        # - question 中的 tools/skills/sub_agents 是赛题提示，不会限制默认开放的能力。
         # - context 提供当前 solution 自动发现到的 MCP tools、skills、sub-agents 以及 call_tool(...) 调用入口。
         # - available_tools / available_skills / available_sub_agents 会一起传给模型，供主 Agent 自己决定是否调用。
         user_prompt = json.dumps(
@@ -270,6 +271,7 @@ class ContestantAgent:
                 "available_tools": context.available_tools,
                 "available_skills": context.available_skills,
                 "available_sub_agents": context.available_agents,
+                "question_field_usage": "Treat question tools, skills, and sub_agents as useful hints, not restrictions. You may use any available capability when it helps solve the task.",
                 "tool_usage": "Call tools only when useful. Use text_read_file to read declared files; use skill_load before skill_run; use agent_delegate for sub-agents.",
                 "final_output": "Return only the final answer text.",
             },

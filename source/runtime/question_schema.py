@@ -43,6 +43,16 @@ def public_question_fields(task: dict[str, Any]) -> dict[str, Any]:
     if "id" in task:
         public["id"] = task["id"]
     public["question"] = question
-    if "files" in task and task["files"]:
-        public["files"] = task["files"]
+    for field in (
+        "title",
+        "description",
+        "explanation",
+        "files",
+        "level",
+        "tools",
+        "skills",
+        "sub_agents",
+    ):
+        if field in task:
+            public[field] = task[field]
     return public

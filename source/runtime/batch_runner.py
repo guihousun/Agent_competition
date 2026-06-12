@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -13,11 +14,9 @@ from source.runtime.question_loader import load_questions
 from source.runtime.question_schema import public_question_fields
 from source.runtime.result_writer import write_results
 from source.runtime.tracing import (
-    RunTrace,
     begin_question_trace,
     create_run_trace,
     end_question_trace,
-    get_active_trace,
 )
 from source.runtime.env_config import ModelConfig, load_dotenv
 from source.solution.contestant_agent import ContestantAgent
@@ -35,20 +34,64 @@ class BatchRunner:
         output_path = Path(output_path).resolve()
         questions = load_questions(question_path)
         question_dir = question_path.parent
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = [
+            {
+                "id": str(question.get("id", index)),
+                "answer": "",
+            }
+            for index, question in enumerate(questions, start=1)
+        ]
         run_start = time.monotonic()
 
         traces_path = output_path.with_name("traces.json")
         dashboard_path = output_path.with_name("dashboard.html")
+        write_results(output_path, results)
+        self._print_event(
+            "RUN_START",
+            {
+                "questions": len(questions),
+                "results_written": 0,
+                "result_path": str(output_path),
+                "result_bytes": self._file_size(output_path),
+            },
+        )
 
         for index, question in enumerate(questions, start=1):
             qid = str(question.get("id", index))
             title = str(question.get("title", ""))
             description = str(question.get("description", ""))
-            print(f"[{index}/{len(questions)}] running question {qid}")
-            result = await self._run_one(question=public_question(question), question_dir=question_dir, title=title, description=description)
-            results.append(result)
+            self._print_event(
+                "QUESTION_START",
+                {
+                    "id": qid,
+                    "index": index,
+                    "total": len(questions),
+                    "cumulative_ms": self._elapsed_ms(run_start),
+                },
+            )
+            result = await self._run_one(
+                question=public_question(question),
+                question_dir=question_dir,
+                title=title,
+                description=description,
+            )
+            results[index - 1] = {
+                "id": qid,
+                "answer": str(result.get("answer", "")),
+            }
             write_results(output_path, results)
+            trace = self._latest_trace(qid)
+            self._print_event(
+                "QUESTION_RESULT",
+                self._question_diagnostics(
+                    trace=trace,
+                    result=results[index - 1],
+                    index=index,
+                    total=len(questions),
+                    run_start=run_start,
+                    output_path=output_path,
+                ),
+            )
 
             # Update traces + dashboard after each question
             self._run_trace.flush_to_file(traces_path)
@@ -69,6 +112,21 @@ class BatchRunner:
         except Exception as exc:
             print(f"dashboard generation skipped: {exc}", file=sys.stderr)
 
+        self._print_event(
+            "RUN_RESULT",
+            {
+                "status": "completed",
+                "questions": len(questions),
+                "results_written": len(questions),
+                "answers_present": sum(
+                    bool(str(item.get("answer", "")).strip())
+                    for item in results
+                ),
+                "cumulative_ms": self._elapsed_ms(run_start),
+                "result_path": str(output_path),
+                "result_bytes": self._file_size(output_path),
+            },
+        )
         return results
 
     async def _run_one(self, *, question: dict[str, Any], question_dir: Path, title: str = "", description: str = "") -> dict[str, Any]:
@@ -90,7 +148,11 @@ class BatchRunner:
             }
         except Exception as exc:
             print(f"question {qid} failed: {exc}", file=sys.stderr)
-            end_question_trace("error", "", error=str(exc))
+            end_question_trace(
+                "error",
+                "",
+                error=f"{type(exc).__name__}: {exc}",
+            )
             self._run_trace.add_question(trace)
             return {
                 "id": qid,
@@ -118,6 +180,74 @@ class BatchRunner:
             mcp=self.mcp,
             workspace_dir=workspace_dir.resolve(),
             package_id=self._config.package_id,
+        )
+
+    def _question_diagnostics(
+        self,
+        *,
+        trace: QuestionTrace | None,
+        result: dict[str, Any],
+        index: int,
+        total: int,
+        run_start: float,
+        output_path: Path,
+    ) -> dict[str, Any]:
+        answer = str(result.get("answer", ""))
+        status = trace.status if trace is not None else "unknown"
+        duration_ms = trace.duration_ms if trace is not None else 0
+        counts = (
+            trace.diagnostic_counts()
+            if trace is not None
+            else {"llm_calls": 0, "tool_calls": 0}
+        )
+        error_type, error_message = self._split_error(
+            trace.error if trace is not None else None
+        )
+        return {
+            "id": str(result.get("id", "")),
+            "index": index,
+            "total": total,
+            "status": status,
+            "answer_present": bool(answer.strip()),
+            "answer_chars": len(answer),
+            "duration_ms": duration_ms,
+            "cumulative_ms": self._elapsed_ms(run_start),
+            "llm_calls": counts["llm_calls"],
+            "tool_calls": counts["tool_calls"],
+            "results_written": index,
+            "result_path": str(output_path),
+            "result_bytes": self._file_size(output_path),
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+
+    def _latest_trace(self, question_id: str) -> QuestionTrace | None:
+        for trace in reversed(self._run_trace.questions):
+            if trace.id == question_id:
+                return trace
+        return None
+
+    def _split_error(self, error: str | None) -> tuple[str | None, str | None]:
+        if not error:
+            return None, None
+        error_type, separator, message = error.partition(":")
+        if separator and error_type.strip():
+            return error_type.strip(), message.lstrip()
+        return "Error", error
+
+    def _elapsed_ms(self, start: float) -> int:
+        return int((time.monotonic() - start) * 1000)
+
+    def _file_size(self, path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    def _print_event(self, name: str, payload: dict[str, Any]) -> None:
+        print(
+            f"[{name}] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}",
+            flush=True,
         )
 
 

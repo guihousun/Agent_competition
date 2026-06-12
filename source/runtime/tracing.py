@@ -145,6 +145,14 @@ class QuestionTrace:
             "spans": [s.to_dict() for s in self.spans],
         }
 
+    def diagnostic_counts(self) -> dict[str, int]:
+        """Return privacy-safe call counts for contest logs."""
+
+        return {
+            "llm_calls": sum(span.type == "llm_call" for span in self.spans),
+            "tool_calls": sum(span.type == "tool_call" for span in self.spans),
+        }
+
 
 # ---------------------------------------------------------------------------
 # ContextVar-based propagation
