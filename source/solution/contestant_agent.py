@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -18,6 +19,23 @@ def tool_output_max_chars() -> int:
 
 def _tool_output_for_history(content: str) -> str:
     return content[:tool_output_max_chars()]
+
+
+PARALLEL_SAFE_TOOLS = frozenset(
+    {
+        "answer_formatter",
+        "csv_aggregate",
+        "csv_read",
+        "date_compute",
+        "mock_order_lookup",
+        "mock_policy_check",
+        "skill_load",
+        "skill_read_resource",
+        "sql_query",
+        "text_read_file",
+        "workday_calc",
+    }
+)
 
 
 SYSTEM_PROMPT = """
@@ -129,7 +147,8 @@ SYSTEM_PROMPT = """
 3. 分析结果
 
 【关键原则】
-- 每次只调用一个工具，等待结果后再决定下一步
+- 多个工具调用彼此独立且均为只读计算或读取时，应在同一轮批量调用，避免逐个等待模型往返
+- 工具之间存在依赖、会写入状态、执行代码、访问网络、运行 Skill 或调用子 Agent 时，必须按依赖顺序逐步调用
 - 如果工具调用失败，分析错误原因并尝试替代方案
 - 不要重复调用相同参数的工具
 - 文件路径使用题目中声明的路径，不要尝试其他路径
@@ -258,7 +277,7 @@ class ContestantAgent:
                 "available_skills": context.available_skills,
                 "available_sub_agents": context.available_agents,
                 "question_field_usage": "Treat question tools, skills, and sub_agents as useful hints, not restrictions. You may use any available capability when it helps solve the task.",
-                "tool_usage": "Call tools only when useful. Use text_read_file to read declared files; use skill_load before skill_run; use agent_delegate for sub-agents.",
+                "tool_usage": "Call tools only when useful. Batch independent read-only calls in one response. Keep dependent, state-changing, network, code, skill execution, and sub-agent calls ordered. Use text_read_file to read declared files; use skill_load before skill_run; use agent_delegate for sub-agents.",
                 "final_output": "Return only the final answer text.",
             },
             ensure_ascii=False,
@@ -348,6 +367,7 @@ class ContestantAgent:
                 messages.append({"role": "user", "content": "请输出最终答案文本。"})
                 continue
 
+            prepared_calls = []
             for tool_call in tool_calls:
                 tool_name = self._tool_call_name(tool_call)
                 args_text = self._tool_call_arguments(tool_call)
@@ -355,7 +375,14 @@ class ContestantAgent:
                     tool_args = json.loads(args_text)
                 except json.JSONDecodeError:
                     tool_args = {}
-                tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
+                prepared_calls.append((tool_name, tool_args))
+
+            tool_results = await self._execute_tool_batch(context, prepared_calls)
+            for tool_call, (tool_name, _), tool_result in zip(
+                tool_calls,
+                prepared_calls,
+                tool_results,
+            ):
 
                 # Check if this is an image result — inject as multimodal content
                 image_injected = False
@@ -426,6 +453,7 @@ class ContestantAgent:
             + "\n\n当前模型网关可能不支持原生 tools 字段。"
             + "\n需要工具时，只输出 JSON，且第一个字符必须是 {，不要输出 markdown 代码块或思考过程："
             + '{"tool_calls":[{"name":"工具名","arguments":{}}]}'
+            + "\n彼此独立的只读工具应放入同一个 tool_calls 数组；存在依赖或副作用时按顺序分轮请求。"
             + "\n任务完成时，直接输出最终答案文本；不要包成结果对象。"
         )
 
@@ -465,7 +493,8 @@ class ContestantAgent:
                 messages.append({"role": "user", "content": "请输出最终答案文本，或输出 tool_calls JSON。"})
                 continue
 
-            tool_results = []
+            prepared_calls = []
+            prepared_indexes = []
             for call_index, tool_call in enumerate(tool_calls):
                 if not isinstance(tool_call, dict):
                     continue
@@ -479,11 +508,21 @@ class ContestantAgent:
                     }
                 if not isinstance(tool_args, dict):
                     tool_args = {}
+                prepared_indexes.append(call_index)
+                prepared_calls.append((tool_name, tool_args))
+
+            executed_results = await self._execute_tool_batch(context, prepared_calls)
+            tool_results = []
+            for call_index, (tool_name, _), tool_result in zip(
+                prepared_indexes,
+                prepared_calls,
+                executed_results,
+            ):
                 tool_results.append(
                     {
                         "index": call_index,
                         "name": tool_name,
-                        "result": await self._call_tool_as_text(context, tool_name, tool_args),
+                        "result": tool_result,
                     }
                 )
 
@@ -512,6 +551,31 @@ class ContestantAgent:
             tools=tools,
             context=context,
         )
+
+    async def _execute_tool_batch(
+        self,
+        context: AgentContext,
+        calls: list[tuple[str, dict[str, Any]]],
+    ) -> list[str]:
+        if len(calls) > 1 and all(
+            tool_name in PARALLEL_SAFE_TOOLS
+            for tool_name, _ in calls
+        ):
+            return list(
+                await asyncio.gather(
+                    *(
+                        self._call_tool_as_text(context, tool_name, tool_args)
+                        for tool_name, tool_args in calls
+                    )
+                )
+            )
+
+        results = []
+        for tool_name, tool_args in calls:
+            results.append(
+                await self._call_tool_as_text(context, tool_name, tool_args)
+            )
+        return results
 
     async def _call_tool_as_text(self, context: AgentContext, tool_name: str, tool_args: dict[str, Any]) -> str:
         trace = get_active_trace()
