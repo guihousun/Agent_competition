@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -70,7 +71,6 @@ def write_dashboard(
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="3">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Contest Dashboard</title>
   <style>
@@ -421,7 +421,7 @@ def write_dashboard(
   </style>
 </head>
 <body>
-<main>
+<main id="dashboard-root">
   <header class="topbar">
     <div>
       <div class="eyebrow">Local diagnostics</div>
@@ -467,24 +467,84 @@ def write_dashboard(
 </main>
 <script>
   const storageKey = "agent-dashboard-open-questions";
-  const stored = new Set(JSON.parse(sessionStorage.getItem(storageKey) || "[]"));
-  document.querySelectorAll("details.question-card").forEach((card) => {{
-    if (stored.has(card.id)) card.open = true;
-    card.addEventListener("toggle", () => {{
-      const openIds = [...document.querySelectorAll("details.question-card[open]")]
-        .filter((item) => !item.classList.contains("status-running") && !item.classList.contains("status-error"))
-        .map((item) => item.id);
-      sessionStorage.setItem(storageKey, JSON.stringify(openIds));
+  const stateUrl = "dashboard-state.json";
+  let lastHtml = document.documentElement.outerHTML;
+
+  function savedOpenIds() {{
+    try {{
+      return new Set(JSON.parse(sessionStorage.getItem(storageKey) || "[]"));
+    }} catch {{
+      return new Set();
+    }}
+  }}
+
+  function collectOpenIds() {{
+    return [...document.querySelectorAll("details.question-card[open]")]
+      .filter((item) => !item.classList.contains("status-running") && !item.classList.contains("status-error"))
+      .map((item) => item.id);
+  }}
+
+  function saveOpenIds() {{
+    sessionStorage.setItem(storageKey, JSON.stringify(collectOpenIds()));
+  }}
+
+  function bindDashboard() {{
+    const stored = savedOpenIds();
+    document.querySelectorAll("details.question-card").forEach((card) => {{
+      if (stored.has(card.id)) card.open = true;
+      card.addEventListener("toggle", saveOpenIds);
     }});
-  }});
+  }}
+
+  function extractRootHtml(html) {{
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const root = parsed.querySelector("#dashboard-root");
+    return root ? root.innerHTML : "";
+  }}
+
+  async function pollDashboardState() {{
+    try {{
+      const response = await fetch(stateUrl + "?_t=" + Date.now(), {{ cache: "no-store" }});
+      if (response.ok) {{
+        const state = await response.json();
+        if (state.html && state.html !== lastHtml) {{
+          saveOpenIds();
+          const scrollY = window.scrollY;
+          const nextRootHtml = extractRootHtml(state.html);
+          if (nextRootHtml) {{
+            lastHtml = state.html;
+            document.querySelector("#dashboard-root").innerHTML = nextRootHtml;
+            bindDashboard();
+            window.scrollTo(0, scrollY);
+          }}
+        }}
+      }}
+    }} catch {{
+      // Local file viewing can block fetch(); in that case the page remains readable.
+    }}
+    window.setTimeout(pollDashboardState, 3000);
+  }}
+
+  bindDashboard();
+  window.setTimeout(pollDashboardState, 3000);
 </script>
 </body>
 </html>
 """
+    _write_state_file(output_path.with_name("dashboard-state.json"), document)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.tmp")
     temporary_path.write_text(document, encoding="utf-8")
     temporary_path.replace(output_path)
+
+
+def _write_state_file(path: Path, document: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    with temporary_path.open("w", encoding="utf-8") as file:
+        json.dump({"html": document}, file, ensure_ascii=False)
+        file.write("\n")
+    temporary_path.replace(path)
 
 
 def _question_status(
