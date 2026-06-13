@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from source.runtime.env_config import ModelConfig, env_bool, env_int, load_dotenv
@@ -94,6 +95,7 @@ class ContestantAgent:
                     "skills": context.available_skills,
                     "sub_agents": context.available_agents,
                 },
+                **self._task_guidance(question),
                 "instruction": "Treat question capability fields as hints, not restrictions. Solve autonomously and return only the final answer.",
             },
             ensure_ascii=False,
@@ -105,6 +107,29 @@ class ContestantAgent:
             user_prompt=user_prompt,
             context=context,
         )
+
+    def _task_guidance(self, question: dict[str, Any]) -> dict[str, str]:
+        question_text = json.dumps(question, ensure_ascii=False)
+        files = [str(path) for path in (question.get("files") or [])]
+        has_java_source = any(
+            Path(file_name).name.lower().startswith("javasource_")
+            and Path(file_name).suffix.lower() == ".java"
+            for file_name in files
+        )
+        if not has_java_source or "所得税" not in question_text:
+            return {}
+
+        skill_path = Path(__file__).resolve().parent / "skills" / "java_tax_solver" / "SKILL.md"
+        try:
+            guidance = skill_path.read_text(encoding="utf-8")
+        except OSError:
+            guidance = (
+                "java_tax_solver: 修复 Java 源码，动态读取源码中的税率表、起征点和题面工资用例；"
+                "不要硬编码官方样例答案；使用 code_execute 的 python 模式运行 subprocess 获取 java -version。"
+            )
+        return {
+            "task_guidance": guidance[:8000],
+        }
 
     async def _run_model_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
         if not env_bool("AGENT_DEMO_NATIVE_TOOLS", True):

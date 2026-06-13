@@ -13,7 +13,7 @@ simulating it, running checks, and producing the final answer.
 ## Workflow
 
 1. Read the Java source with `text_read_file`.
-2. Run `java -version` with `code_execute` or a short command-equivalent program if the answer requires the runtime version.
+2. Run `java -version` through `code_execute` with Python subprocess if the answer requires the runtime version. Do not use unsupported `shell` or `bash` languages.
 3. Inspect the source before compiling. Broken contest files often contain multiple small defects; fixing only the first compiler error is not enough.
 4. Decode tax parameters from the actual source when present. Do not hardcode official sample answers, salary values, tax brackets, or deduction points.
 5. Repair the Java logic or write a small verification script that exactly mirrors the repaired logic.
@@ -41,6 +41,15 @@ Check for these patterns in broken Java individual income tax calculators:
 
 If the source stores tax tables or deduction points in repeated Base64 strings,
 decode the strings from the source dynamically. Example Python helper to adapt:
+
+Use this tool shape for Java version and deterministic calculations:
+
+```json
+{
+  "language": "python",
+  "code": "import subprocess\\nr = subprocess.run(['java', '-version'], capture_output=True, text=True)\\nprint((r.stderr or r.stdout).splitlines()[0])"
+}
+```
 
 ```python
 import ast, base64, re
