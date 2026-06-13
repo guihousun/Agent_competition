@@ -76,10 +76,10 @@ class ModelConfig:
             chat_completions_url=chat_url,
             api_key=os.getenv("MODEL_API_KEY", "").strip(),
             model=os.getenv("MODEL_NAME", "").strip(),
-            timeout_seconds=env_int("AGENT_DEMO_TIMEOUT_SECONDS", 600),
+            timeout_seconds=env_int("AGENT_DEMO_TIMEOUT_SECONDS", 120),
             temperature=env_float("AGENT_DEMO_TEMPERATURE", 0.2),
             max_tokens=env_int("AGENT_DEMO_MAX_TOKENS", 0),
-            stream=env_bool("AGENT_DEMO_STREAM", True),
+            stream=env_bool("AGENT_DEMO_STREAM", False),
             package_id=(os.getenv("PACKAGE_ID", "").strip() or os.getenv("packageId", "").strip()),
         )
 

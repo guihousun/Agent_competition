@@ -42,7 +42,7 @@ SYSTEM_PROMPT = """
 按规划逐步调用工具，每步在内部思考（不要输出 Thought/Action/Observation）
 
 【Phase 3：验证】
-输出前通过 answer_checker 验证
+主 Agent 自己负责答案正确性；输出前通过 answer_checker 只检查最终格式
 
 【数据处理策略】（关键，减少上下文膨胀）
 
@@ -171,34 +171,20 @@ SYSTEM_PROMPT = """
 
 【Answer Checker 使用流程】
 
-在输出最终答案前，必须调用 answer_checker 验证答案：
+主 Agent 独立负责答案正确性。完成解题后，answer_checker 只做格式后检查：
 
 1. 调用 agent_delegate:
    - agent_name: "answer_checker"
-   - task: 完整的题目描述 + 你的答案
-   - context_text: 工具返回的原始结果
+   - task: 最终候选答案
+   - context_text: ""
 
 2. 分析 answer_checker 返回：
-   - overall_valid: true → 直接输出答案
-   - overall_valid: false → 根据 fix_suggestions 修改答案
+   - overall_valid: true → 输出 cleaned_answer
+   - overall_valid: false → 使用 corrected_answer 做一次格式修复并复检
 
-3. 如果 answer_checker 指出错误：
-   - 根据 fix_suggestions 修改答案
-   - 再次调用 answer_checker 验证
-   - 最多重试 2 次
-
-示例：
-```
-调用：agent_delegate(agent_name="answer_checker",
-                    task="题目：今天是 2026-05-06，下周二几号？答案：2026-05-13",
-                    context_text="date_compute 返回：2026-05-12")
-
-返回：{"overall_valid": false,
-       "fix_suggestions": ["Change '2026-05-13' to '2026-05-12'"]}
-
-修改：将答案改为 2026-05-12
-再次验证：overall_valid = true → 输出
-```
+3. answer_checker 不得调用工具、读取文件、重新计算或修改事实、数字、日期、ID、列表成员
+4. 如果两次格式检查仍未通过，主模型只允许无工具修复一次格式
+5. checker 失败、返回非法 JSON 或空内容时，保留主 Agent 原答案
 
 【答案格式规则】（必须严格遵守，违反则不得分）
 
@@ -333,7 +319,7 @@ class ContestantAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 100)
+        max_iter = env_int("AGENT_DEMO_MAX_ITER", 30)
         for step in range(1, max_iter + 1):
             # Context compression: when approaching 256k limit, compress older messages
             if should_compress(messages, limit=200_000):
@@ -468,7 +454,14 @@ class ContestantAgent:
             tool_calls = self._json_prompt_tool_calls(parsed) if parsed else None
             if not tool_calls:
                 if content:
-                    return self._clean_final_answer(content)
+                    candidate = self._clean_final_answer(content)
+                    return await self._verify_and_fix(
+                        candidate=candidate,
+                        messages=messages,
+                        client=client,
+                        tools=tools,
+                        context=context,
+                    )
                 messages.append({"role": "user", "content": "请输出最终答案文本，或输出 tool_calls JSON。"})
                 continue
 
@@ -511,7 +504,14 @@ class ContestantAgent:
 
         messages.append({"role": "user", "content": "请停止请求工具，直接输出最终答案文本。"})
         completion = await client.create(messages=messages, tools=[], tool_choice="none")
-        return self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        candidate = self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        return await self._verify_and_fix(
+            candidate=candidate,
+            messages=messages,
+            client=client,
+            tools=tools,
+            context=context,
+        )
 
     async def _call_tool_as_text(self, context: AgentContext, tool_name: str, tool_args: dict[str, Any]) -> str:
         trace = get_active_trace()
@@ -630,109 +630,126 @@ class ContestantAgent:
         tools: list,
         context: "AgentContext",
     ) -> str:
-        """LangGraph-style verification pipeline:
-        1. Call answer_checker
-        2. If valid → return
-        3. If format-only issues → code-fix and return
-        4. If content/logic errors → send back to LLM for fix, loop
-        """
-        max_fix_rounds = env_int("AGENT_DEMO_MAX_FIX_ROUNDS", 2)
-        verification_context = self._verification_context(messages)
+        """Run two format checks, then one tool-less main-model format repair."""
+        original_answer = self._clean_final_answer(candidate)
+        working_answer = original_answer
+        format_issues: list[str] = []
+        check_rounds = min(max(env_int("AGENT_DEMO_MAX_FIX_ROUNDS", 2), 1), 2)
 
-        for fix_round in range(max_fix_rounds):
-            # Call answer_checker — it validates AND cleans
+        for check_round in range(check_rounds):
             checker_result = await self._call_tool_as_text(
                 context, "agent_delegate",
                 {
                     "agent_name": "answer_checker",
-                    "task": candidate,
-                    "context_text": verification_context,
+                    "task": working_answer,
+                    "context_text": "",
                 },
             )
 
             try:
                 checker = json.loads(checker_result)
-            except json.JSONDecodeError:
-                if fix_round + 1 < max_fix_rounds:
+            except (json.JSONDecodeError, TypeError):
+                if check_round + 1 < check_rounds:
                     continue
-                return candidate
+                return original_answer
             if not isinstance(checker, dict):
-                if fix_round + 1 < max_fix_rounds:
+                if check_round + 1 < check_rounds:
                     continue
-                return candidate
+                return original_answer
 
-            # Use cleaned_answer if available (checker strips Thought/Action/Observation)
-            cleaned = checker.get("cleaned_answer", candidate)
             overall_valid = checker.get("overall_valid")
             if not isinstance(overall_valid, bool):
-                if fix_round + 1 < max_fix_rounds:
+                if check_round + 1 < check_rounds:
                     continue
-                return candidate
+                return original_answer
 
-            if overall_valid:
-                return cleaned
-
-            suggestions = checker.get("fix_suggestions", [])
-            corrected = checker.get("corrected_answer")
-            if isinstance(corrected, str) and corrected.strip():
-                corrected = self._clean_final_answer(corrected)
-                if corrected != candidate:
-                    candidate = corrected
-                    continue
-            if not suggestions:
-                return cleaned
-
-            # Content/logic errors → send back to LLM for fix
-            fix_prompt = (
-                f"answer_checker 发现以下问题：\n"
-                + "\n".join(f"- {s}" for s in suggestions)
-                + f"\n\n当前答案：{cleaned}\n\n"
-                "请根据建议修正答案，直接输出修正后的答案正文。不要输出 Thought/Action/Observation。"
+            cleaned = self._non_empty_checker_answer(
+                checker.get("cleaned_answer"),
+                fallback=working_answer,
             )
-            messages.append({"role": "user", "content": fix_prompt})
-            completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
-            message = first_message(completion)
-            tool_calls = self._tool_calls_from_message(message)
-            content = str(message.get("content") or "")
-            messages.append(self._assistant_message_for_history(message))
-
-            if tool_calls:
-                for tool_call in tool_calls:
-                    tool_name = self._tool_call_name(tool_call)
-                    args_text = self._tool_call_arguments(tool_call)
-                    try:
-                        tool_args = json.loads(args_text)
-                    except json.JSONDecodeError:
-                        tool_args = {}
-                    tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id", ""),
-                        "name": tool_name,
-                        "content": _tool_output_for_history(tool_result),
-                    })
-                # After tool calls, get the next response
-                completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
-                message = first_message(completion)
-                content = str(message.get("content") or "")
-                messages.append(self._assistant_message_for_history(message))
-
-            candidate = self._clean_final_answer(content)
-
-        return candidate
-
-    def _verification_context(self, messages: list[dict[str, Any]]) -> str:
-        evidence: list[str] = []
-        for message in reversed(messages):
-            if message.get("role") != "tool":
+            corrected = self._non_empty_checker_answer(
+                checker.get("corrected_answer"),
+                fallback="",
+            )
+            if overall_valid:
+                final_answer = corrected or cleaned or working_answer
+                if self._is_format_only_correction(working_answer, final_answer):
+                    return final_answer
+                format_issues = ["checker 尝试改变结构化答案内容，已拒绝该修改"]
                 continue
-            tool_name = str(message.get("name") or "tool")
-            content = str(message.get("content") or "")
-            evidence.append(f"[{tool_name}]\n{content}")
-            if sum(len(item) for item in evidence) >= tool_output_max_chars():
-                break
-        evidence.reverse()
-        return _tool_output_for_history("\n\n".join(evidence))
+
+            issues = checker.get("format_issues", checker.get("fix_suggestions", []))
+            if isinstance(issues, list):
+                format_issues = [str(item) for item in issues if str(item).strip()]
+
+            proposed = corrected or cleaned
+            if (
+                proposed
+                and proposed != working_answer
+                and self._is_format_only_correction(working_answer, proposed)
+            ):
+                working_answer = proposed
+
+        issue_text = "\n".join(f"- {item}" for item in format_issues) or "- 格式检查未通过"
+        fix_prompt = (
+            "只修复格式：修复下面候选答案的最终输出格式，不得重新解题，不得重新计算，"
+            "不得调用工具，不得增加、删除或替换事实值、数字、日期、ID 或列表成员。\n"
+            "可修复 Markdown 代码块、<think>、JSON 语法、引号、括号、转义、"
+            "题目明确要求的分隔符和输出结构。\n\n"
+            f"格式问题：\n{issue_text}\n\n"
+            f"候选答案：\n{working_answer}\n\n"
+            "只输出修复后的完整答案正文；无法仅靠格式修复时原样输出候选答案。"
+        )
+        format_messages = [
+            *messages,
+            {"role": "user", "content": fix_prompt},
+        ]
+        try:
+            completion = await client.create(
+                messages=format_messages,
+                tools=[],
+                tool_choice="none",
+            )
+            repaired = self._clean_final_answer(
+                str(first_message(completion).get("content") or "")
+            )
+        except Exception:
+            return original_answer
+
+        if not repaired:
+            return original_answer
+        if not self._is_format_only_correction(working_answer, repaired):
+            return original_answer
+        return repaired
+
+    def _non_empty_checker_answer(self, value: Any, *, fallback: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return fallback
+        return self._clean_final_answer(value)
+
+    def _is_format_only_correction(self, original: str, corrected: str) -> bool:
+        """Protect already-structured answers from checker semantic rewrites."""
+        if original == corrected:
+            return True
+
+        try:
+            original_json = json.loads(original)
+        except json.JSONDecodeError:
+            original_json = None
+        else:
+            try:
+                return json.loads(corrected) == original_json
+            except json.JSONDecodeError:
+                return False
+
+        comma_item = r"[\w./:@%+~-]+"
+        comma_list = rf"^{comma_item}(?:\s*,\s*{comma_item})+$"
+        if re.fullmatch(comma_list, original.strip()):
+            original_items = [item.strip() for item in original.split(",")]
+            corrected_items = [item.strip() for item in corrected.split(",")]
+            return original_items == corrected_items
+
+        return True
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
         tool_calls = parsed.get("tool_calls")

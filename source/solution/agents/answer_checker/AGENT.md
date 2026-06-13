@@ -1,18 +1,20 @@
 # Answer Checker Sub-agent
 
-Prompt 驱动的答案验证 Sub-agent。不依赖硬编码规则，由 LLM 推理验证答案是否满足题目要求。
+只负责最终答案格式的后检查 Sub-agent，不负责重新解题或判断事实正确性。
 
 ## 职责
 
-接收题目描述 + 待验证答案，返回结构化验证结果和修改建议。
+接收题目描述和待检查答案，清理包装并检查空答案、Markdown、`<think>`、JSON、分隔符和输出结构。
+
+它不使用工具，不读取文件，不重新计算，也不能因为怀疑答案错误而增删答案项。
 
 ## 使用方式
 
 ```python
 agent_delegate(
     agent_name="answer_checker",
-    task="题目描述 + 你的答案",
-    context_text="工具返回的原始结果"
+    task="主 Agent 的最终候选答案",
+    context_text=""
 )
 ```
 
@@ -21,13 +23,15 @@ agent_delegate(
 ```json
 {
   "overall_valid": true/false,
-  "fix_suggestions": ["具体修改建议"],
+  "cleaned_answer": "去除包装后的完整答案",
+  "corrected_answer": "仅格式修复后的完整答案或空字符串",
+  "format_issues": ["具体格式问题"],
   "summary": "一句话总结"
 }
 ```
 
 ## 设计原则
 
-- **不写死规则**：格式类型、日期表达式、字段名称等不做硬编码匹配
-- **LLM 推理**：由模型理解题目要求并判断答案是否符合
-- **泛化能力**：适用于任意题型，不依赖预定义的检查模式
+- **主 Agent 负责正确性**：checker 不复算、不搜索、不使用工具
+- **只修格式**：不得改变事实、数字、日期、ID 或列表成员
+- **失败回退**：checker 失败或返回空内容时保留主 Agent 原答案
