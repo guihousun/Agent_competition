@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable
 
 from source.runtime.agent_context import AgentContext
 from source.runtime.agent_registry import AgentRegistry
@@ -85,11 +85,20 @@ class BatchRunner:
                 current_question_id=qid,
                 output_path=output_path,
             )
+            trace_update = (
+                lambda _trace, current_id=qid: self._refresh_dashboard(
+                    enabled=True,
+                    questions=questions,
+                    current_question_id=current_id,
+                    output_path=output_path,
+                )
+            ) if dashboard else None
             result = await self._run_one(
                 question=public_question(question),
                 question_dir=question_dir,
                 title=title,
                 description=description,
+                on_trace_update=trace_update,
             )
             results[index - 1] = {
                 "id": qid,
@@ -168,9 +177,25 @@ class BatchRunner:
         except Exception as exc:
             print(f"dashboard refresh failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    async def _run_one(self, *, question: dict[str, Any], question_dir: Path, title: str = "", description: str = "") -> dict[str, Any]:
+    async def _run_one(
+        self,
+        *,
+        question: dict[str, Any],
+        question_dir: Path,
+        title: str = "",
+        description: str = "",
+        on_trace_update: Callable[[QuestionTrace], None] | None = None,
+    ) -> dict[str, Any]:
         qid = str(question.get("id", "unknown"))
-        trace = begin_question_trace(qid, title=title, description=description)
+        trace = begin_question_trace(
+            qid,
+            title=title,
+            description=description,
+            on_update=on_trace_update,
+        )
+        self._run_trace.add_question(trace)
+        if on_trace_update is not None:
+            on_trace_update(trace)
         try:
             with tempfile.TemporaryDirectory(prefix=f"agent_question_{qid}_") as temp_dir:
                 context = self._build_context(
@@ -180,7 +205,6 @@ class BatchRunner:
                 )
                 answer = await ContestantAgent().solve(question=question, context=context)
             end_question_trace("success", str(answer))
-            self._run_trace.add_question(trace)
             return {
                 "id": qid,
                 "answer": str(answer),
@@ -192,7 +216,6 @@ class BatchRunner:
                 "",
                 error=f"{type(exc).__name__}: {exc}",
             )
-            self._run_trace.add_question(trace)
             return {
                 "id": qid,
                 "answer": "",

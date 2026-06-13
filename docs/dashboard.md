@@ -18,6 +18,6 @@ The runner creates these files next to `results.json`:
 - `traces.json`: structured trace data for the same run.
 
 Open `dashboard.html` in a browser while the run is active. Each question is
-shown as running when it starts and is refreshed after its result has been
-written. Dashboard failures are reported to stderr and do not stop result
-generation.
+shown as running when it starts. The page is refreshed after every completed
+LLM call and tool call, and again after the result has been written. Dashboard
+failures are reported to stderr and do not stop result generation.

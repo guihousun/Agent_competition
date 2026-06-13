@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +49,11 @@ class QuestionTrace:
     tokens: dict[str, int] = field(default_factory=lambda: {"prompt": 0, "completion": 0})
     _seq_counter: int = field(default=0, repr=False)
     _start_time: float = field(default=0.0, repr=False)
+    _on_update: Callable[[QuestionTrace], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def _next_seq(self) -> int:
         self._seq_counter += 1
@@ -97,6 +102,7 @@ class QuestionTrace:
         if usage:
             self.tokens["prompt"] = self.tokens.get("prompt", 0) + int(usage.get("prompt_tokens", 0) or 0)
             self.tokens["completion"] = self.tokens.get("completion", 0) + int(usage.get("completion_tokens", 0) or 0)
+        self._notify_update()
 
     def record_tool_call(
         self,
@@ -125,12 +131,22 @@ class QuestionTrace:
             },
         )
         self.spans.append(span)
+        self._notify_update()
 
     def finish(self, status: str, answer: str, duration_ms: int, *, error: str | None = None) -> None:
         self.status = status
         self.answer = answer
         self.duration_ms = duration_ms
         self.error = error
+        self._notify_update()
+
+    def _notify_update(self) -> None:
+        if self._on_update is None:
+            return
+        try:
+            self._on_update(self)
+        except Exception:
+            pass
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,9 +182,20 @@ def get_active_trace() -> QuestionTrace | None:
     return _active_trace.get()
 
 
-def begin_question_trace(question_id: str, title: str = "", description: str = "") -> QuestionTrace:
+def begin_question_trace(
+    question_id: str,
+    title: str = "",
+    description: str = "",
+    on_update: Callable[[QuestionTrace], None] | None = None,
+) -> QuestionTrace:
     """Start a new question trace and set it as the active context."""
-    trace = QuestionTrace(id=question_id, title=title, description=description[:500], _start_time=time.monotonic())
+    trace = QuestionTrace(
+        id=question_id,
+        title=title,
+        description=description[:500],
+        _start_time=time.monotonic(),
+        _on_update=on_update,
+    )
     _active_trace.set(trace)
     return trace
 
