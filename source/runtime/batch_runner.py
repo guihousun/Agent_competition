@@ -29,7 +29,13 @@ class BatchRunner:
         self._config = ModelConfig.from_env()
         self._run_trace = create_run_trace(model=self._config.model)
 
-    async def run_file(self, *, question_path: str | Path, output_path: str | Path) -> list[dict[str, Any]]:
+    async def run_file(
+        self,
+        *,
+        question_path: str | Path,
+        output_path: str | Path,
+        dashboard: bool = False,
+    ) -> list[dict[str, Any]]:
         question_path = Path(question_path).resolve()
         output_path = Path(output_path).resolve()
         questions = load_questions(question_path)
@@ -44,6 +50,12 @@ class BatchRunner:
         run_start = time.monotonic()
 
         write_results(output_path, results)
+        self._refresh_dashboard(
+            enabled=dashboard,
+            questions=questions,
+            current_question_id=None,
+            output_path=output_path,
+        )
         self._print_event(
             "RUN_START",
             {
@@ -67,6 +79,12 @@ class BatchRunner:
                     "cumulative_ms": self._elapsed_ms(run_start),
                 },
             )
+            self._refresh_dashboard(
+                enabled=dashboard,
+                questions=questions,
+                current_question_id=qid,
+                output_path=output_path,
+            )
             result = await self._run_one(
                 question=public_question(question),
                 question_dir=question_dir,
@@ -78,6 +96,12 @@ class BatchRunner:
                 "answer": str(result.get("answer", "")),
             }
             write_results(output_path, results)
+            self._refresh_dashboard(
+                enabled=dashboard,
+                questions=questions,
+                current_question_id=None,
+                output_path=output_path,
+            )
             trace = self._latest_trace(qid)
             self._print_event(
                 "QUESTION_RESULT",
@@ -92,6 +116,12 @@ class BatchRunner:
             )
 
         self._run_trace.total_duration_ms = int((time.monotonic() - run_start) * 1000)
+        self._refresh_dashboard(
+            enabled=dashboard,
+            questions=questions,
+            current_question_id=None,
+            output_path=output_path,
+        )
 
         self._print_event(
             "RUN_RESULT",
@@ -109,6 +139,34 @@ class BatchRunner:
             },
         )
         return results
+
+    def _refresh_dashboard(
+        self,
+        *,
+        enabled: bool,
+        questions: list[dict[str, Any]],
+        current_question_id: str | None,
+        output_path: Path,
+    ) -> None:
+        if not enabled:
+            return
+
+        dashboard_path = output_path.parent / "dashboard.html"
+        trace_path = output_path.parent / "traces.json"
+        try:
+            from source.runtime.dashboard import write_dashboard
+
+            self._run_trace.flush_to_file(trace_path)
+            write_dashboard(
+                output_path=dashboard_path,
+                run_trace=self._run_trace,
+                questions=questions,
+                current_question_id=current_question_id,
+                result_path=output_path,
+                trace_path=trace_path,
+            )
+        except Exception as exc:
+            print(f"dashboard refresh failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     async def _run_one(self, *, question: dict[str, Any], question_dir: Path, title: str = "", description: str = "") -> dict[str, Any]:
         qid = str(question.get("id", "unknown"))
