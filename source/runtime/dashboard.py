@@ -142,6 +142,41 @@ def write_dashboard(
       box-shadow: 0 0 0 5px rgba(103, 183, 255, .10);
       animation: pulse 1.7s ease-in-out infinite;
     }}
+    .update-banner {{
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 50;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      max-width: min(420px, calc(100vw - 36px));
+      padding: 12px 14px;
+      border: 1px solid rgba(103, 183, 255, .36);
+      border-radius: 14px;
+      color: #dcecff;
+      background: rgba(15, 25, 42, .96);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      backdrop-filter: blur(12px);
+      font-size: 12px;
+    }}
+    .update-banner.visible {{ display: flex; }}
+    .update-banner button {{
+      border: 0;
+      border-radius: 999px;
+      padding: 7px 10px;
+      color: #06101d;
+      background: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }}
+    .update-banner button.secondary {{
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--line);
+    }}
     @keyframes pulse {{ 50% {{ opacity: .45; transform: scale(.82); }} }}
     .overview {{
       padding: 18px;
@@ -421,6 +456,11 @@ def write_dashboard(
   </style>
 </head>
 <body>
+<div id="update-banner" class="update-banner">
+  <span>用户正在阅读，暂停自动刷新。有新数据可用。</span>
+  <button type="button" id="apply-update">更新</button>
+  <button type="button" class="secondary" id="dismiss-update">稍后</button>
+</div>
 <main id="dashboard-root">
   <header class="topbar">
     <div>
@@ -469,6 +509,7 @@ def write_dashboard(
   const storageKey = "agent-dashboard-open-questions";
   const stateUrl = "dashboard-state.json";
   let lastHtml = document.documentElement.outerHTML;
+  let pendingHtml = "";
 
   function savedOpenIds() {{
     try {{
@@ -502,20 +543,38 @@ def write_dashboard(
     return root ? root.innerHTML : "";
   }}
 
+  function isReadingContent() {{
+    return window.scrollY >= 80;
+  }}
+
+  function setUpdateBanner(visible) {{
+    const banner = document.querySelector("#update-banner");
+    if (banner) banner.classList.toggle("visible", visible);
+  }}
+
+  function applyDashboardHtml(html) {{
+    const nextRootHtml = extractRootHtml(html);
+    if (!nextRootHtml) return false;
+    saveOpenIds();
+    lastHtml = html;
+    document.querySelector("#dashboard-root").innerHTML = nextRootHtml;
+    bindDashboard();
+    setUpdateBanner(false);
+    pendingHtml = "";
+    return true;
+  }}
+
   async function pollDashboardState() {{
     try {{
       const response = await fetch(stateUrl + "?_t=" + Date.now(), {{ cache: "no-store" }});
       if (response.ok) {{
         const state = await response.json();
         if (state.html && state.html !== lastHtml) {{
-          saveOpenIds();
-          const scrollY = window.scrollY;
-          const nextRootHtml = extractRootHtml(state.html);
-          if (nextRootHtml) {{
-            lastHtml = state.html;
-            document.querySelector("#dashboard-root").innerHTML = nextRootHtml;
-            bindDashboard();
-            window.scrollTo(0, scrollY);
+          if (window.scrollY < 80) {{
+            applyDashboardHtml(state.html);
+          }} else {{
+            pendingHtml = state.html;
+            setUpdateBanner(true);
           }}
         }}
       }}
@@ -526,6 +585,12 @@ def write_dashboard(
   }}
 
   bindDashboard();
+  document.querySelector("#apply-update")?.addEventListener("click", () => {{
+    if (pendingHtml) applyDashboardHtml(pendingHtml);
+  }});
+  document.querySelector("#dismiss-update")?.addEventListener("click", () => {{
+    setUpdateBanner(false);
+  }});
   window.setTimeout(pollDashboardState, 3000);
 </script>
 </body>

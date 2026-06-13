@@ -20,6 +20,7 @@ The runner creates these files next to `results.json`:
 
 Open `dashboard.html` in a browser while the run is active. Each question is
 shown as running when it starts. The page polls `dashboard-state.json` every 3
-seconds and updates the page content without a full browser refresh, so scroll
-position and expanded sections are preserved while reading. Dashboard failures
-are reported to stderr and do not stop result generation.
+seconds. When you are near the top overview it applies updates automatically;
+when you are reading lower content it pauses automatic updates and shows a
+"new data available" banner, so the page does not jump while you read.
+Dashboard failures are reported to stderr and do not stop result generation.
