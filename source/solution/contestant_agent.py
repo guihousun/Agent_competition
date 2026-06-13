@@ -18,6 +18,10 @@ def tool_output_max_chars() -> int:
     return env_int("AGENT_DEMO_TOOL_OUTPUT_MAX_CHARS", 65_536)
 
 
+def max_agent_iterations() -> int:
+    return max(1, env_int("AGENT_DEMO_MAX_ITER", 10))
+
+
 def _tool_output_for_history(content: str) -> str:
     return content[:tool_output_max_chars()]
 
@@ -179,7 +183,7 @@ class ContestantAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 30)
+        max_iter = max_agent_iterations()
         for step in range(1, max_iter + 1):
             # Context compression: when approaching 256k limit, compress older messages
             if should_compress(messages, limit=200_000):
@@ -314,7 +318,7 @@ class ContestantAgent:
             },
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 6)
+        max_iter = max_agent_iterations()
         for step in range(1, max_iter + 1):
             completion = await client.create(messages=messages, tools=[], tool_choice="none")
             content = str(first_message(completion).get("content") or "").strip()
