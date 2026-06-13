@@ -539,97 +539,43 @@ class ContestantAgent:
         tools: list,
         context: "AgentContext",
     ) -> str:
-        """Run two format checks, then one tool-less main-model format repair."""
+        """Run one format-only check and otherwise preserve the main answer."""
         original_answer = self._clean_final_answer(candidate)
-        working_answer = original_answer
-        format_issues: list[str] = []
-        check_rounds = min(max(env_int("AGENT_DEMO_MAX_FIX_ROUNDS", 2), 1), 2)
-
-        for check_round in range(check_rounds):
+        try:
             checker_result = await self._call_tool_as_text(
                 context, "agent_delegate",
                 {
                     "agent_name": "answer_checker",
-                    "task": working_answer,
+                    "task": original_answer,
                     "context_text": "",
                 },
-            )
-
-            try:
-                checker = json.loads(checker_result)
-            except (json.JSONDecodeError, TypeError):
-                if check_round + 1 < check_rounds:
-                    continue
-                return original_answer
-            if not isinstance(checker, dict):
-                if check_round + 1 < check_rounds:
-                    continue
-                return original_answer
-
-            overall_valid = checker.get("overall_valid")
-            if not isinstance(overall_valid, bool):
-                if check_round + 1 < check_rounds:
-                    continue
-                return original_answer
-
-            cleaned = self._non_empty_checker_answer(
-                checker.get("cleaned_answer"),
-                fallback=working_answer,
-            )
-            corrected = self._non_empty_checker_answer(
-                checker.get("corrected_answer"),
-                fallback="",
-            )
-            if overall_valid:
-                final_answer = corrected or cleaned or working_answer
-                if self._is_format_only_correction(working_answer, final_answer):
-                    return final_answer
-                format_issues = ["checker 尝试改变结构化答案内容，已拒绝该修改"]
-                continue
-
-            issues = checker.get("format_issues", checker.get("fix_suggestions", []))
-            if isinstance(issues, list):
-                format_issues = [str(item) for item in issues if str(item).strip()]
-
-            proposed = corrected or cleaned
-            if (
-                proposed
-                and proposed != working_answer
-                and self._is_format_only_correction(working_answer, proposed)
-            ):
-                working_answer = proposed
-
-        issue_text = "\n".join(f"- {item}" for item in format_issues) or "- 格式检查未通过"
-        fix_prompt = (
-            "只修复格式：修复下面候选答案的最终输出格式，不得重新解题，不得重新计算，"
-            "不得调用工具，不得增加、删除或替换事实值、数字、日期、ID 或列表成员。\n"
-            "可修复 Markdown 代码块、<think>、JSON 语法、引号、括号、转义、"
-            "题目明确要求的分隔符和输出结构。\n\n"
-            f"格式问题：\n{issue_text}\n\n"
-            f"候选答案：\n{working_answer}\n\n"
-            "只输出修复后的完整答案正文；无法仅靠格式修复时原样输出候选答案。"
-        )
-        format_messages = [
-            *messages,
-            {"role": "user", "content": fix_prompt},
-        ]
-        try:
-            completion = await client.create(
-                messages=format_messages,
-                tools=[],
-                tool_choice="none",
-            )
-            repaired = self._clean_final_answer(
-                str(first_message(completion).get("content") or "")
             )
         except Exception:
             return original_answer
 
-        if not repaired:
+        try:
+            checker = json.loads(checker_result)
+        except (json.JSONDecodeError, TypeError):
             return original_answer
-        if not self._is_format_only_correction(working_answer, repaired):
+        if not isinstance(checker, dict):
             return original_answer
-        return repaired
+
+        overall_valid = checker.get("overall_valid")
+        if not isinstance(overall_valid, bool):
+            return original_answer
+
+        cleaned = self._non_empty_checker_answer(
+            checker.get("cleaned_answer"),
+            fallback=original_answer,
+        )
+        corrected = self._non_empty_checker_answer(
+            checker.get("corrected_answer"),
+            fallback="",
+        )
+        proposed = corrected or cleaned or original_answer
+        if not self._is_format_only_correction(original_answer, proposed):
+            return original_answer
+        return proposed
 
     def _non_empty_checker_answer(self, value: Any, *, fallback: str) -> str:
         if not isinstance(value, str) or not value.strip():
