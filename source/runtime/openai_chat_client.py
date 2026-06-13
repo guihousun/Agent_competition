@@ -74,6 +74,8 @@ class ChatCompletionClient:
         }
         if self.config.max_tokens > 0:
             payload["max_tokens"] = self.config.max_tokens
+        if self.config.enable_thinking is not None:
+            payload["enable_thinking"] = self.config.enable_thinking
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice

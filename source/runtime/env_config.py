@@ -32,6 +32,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def env_optional_bool(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
@@ -61,6 +68,7 @@ class ModelConfig:
     temperature: float
     max_tokens: int
     stream: bool
+    enable_thinking: bool | None
     package_id: str
 
     @classmethod
@@ -79,7 +87,8 @@ class ModelConfig:
             timeout_seconds=env_int("AGENT_DEMO_TIMEOUT_SECONDS", 120),
             temperature=env_float("AGENT_DEMO_TEMPERATURE", 0.2),
             max_tokens=env_int("AGENT_DEMO_MAX_TOKENS", 0),
-            stream=env_bool("AGENT_DEMO_STREAM", False),
+            stream=env_bool("AGENT_DEMO_STREAM", True),
+            enable_thinking=env_optional_bool("AGENT_DEMO_ENABLE_THINKING"),
             package_id=(os.getenv("PACKAGE_ID", "").strip() or os.getenv("packageId", "").strip()),
         )
 
