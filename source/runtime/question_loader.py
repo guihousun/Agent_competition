@@ -10,7 +10,7 @@ def load_questions(path: str | Path) -> list[dict[str, Any]]:
     questions = []
     for item in load_task_records(path):
         public = public_question_fields(item)
-        # Preserve title and description for tracing/dashboard
+        # Preserve title and description for runtime diagnostics.
         if "title" in item:
             public["title"] = item["title"]
         if "description" in item:

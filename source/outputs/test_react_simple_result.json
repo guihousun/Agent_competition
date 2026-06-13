@@ -1,6 +1,0 @@
-[
-  {
-    "id": "test_react_simple_001",
-    "answer": "{\"columns\": [\"order_id\", \"supplier\", \"amount\", \"currency\", \"date\"], \"rows\": 5}"
-  }
-]

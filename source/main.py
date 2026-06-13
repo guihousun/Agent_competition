@@ -11,12 +11,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Skill distillation contest demo runner")
     parser.add_argument(
         "--question",
-        default="source/examples/questions.json",
+        required=True,
         help="Path to question JSON file.",
     )
     parser.add_argument(
         "--output",
-        default="source/outputs/result.json",
+        required=True,
         help="Path to output result JSON file.",
     )
     return parser.parse_args()

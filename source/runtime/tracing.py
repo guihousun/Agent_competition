@@ -108,7 +108,7 @@ class QuestionTrace:
         error: str | None,
     ) -> None:
         """Record a tool call span."""
-        # Classify tool type for dashboard coloring
+        # Classify tool type for structured trace diagnostics.
         tool_type = _classify_tool(tool_name)
 
         span = SpanEvent(
@@ -244,7 +244,7 @@ def _now_iso() -> str:
 
 
 def _classify_tool(tool_name: str) -> str:
-    """Classify a tool name for dashboard coloring."""
+    """Classify a tool name for structured trace diagnostics."""
     if tool_name in ("skill_load", "skill_read_resource", "skill_run"):
         return "skill"
     if tool_name == "agent_delegate":

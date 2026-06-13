@@ -1,6 +1,0 @@
-order_id,supplier,amount,currency,date
-PO001,SupplierA,1500.50,CNY,2024-01-15
-PO002,SupplierB,2300.00,CNY,2024-01-16
-PO003,SupplierA,890.75,CNY,2024-01-17
-PO004,SupplierC,4500.00,CNY,2024-01-18
-PO005,SupplierB,1200.25,CNY,2024-01-19

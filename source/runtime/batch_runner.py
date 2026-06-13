@@ -43,8 +43,6 @@ class BatchRunner:
         ]
         run_start = time.monotonic()
 
-        traces_path = output_path.with_name("traces.json")
-        dashboard_path = output_path.with_name("dashboard.html")
         write_results(output_path, results)
         self._print_event(
             "RUN_START",
@@ -93,24 +91,7 @@ class BatchRunner:
                 ),
             )
 
-            # Update traces + dashboard after each question
-            self._run_trace.flush_to_file(traces_path)
-            try:
-                from source.runtime.generate_dashboard import generate_dashboard
-                generate_dashboard(traces_path, dashboard_path)
-            except Exception:
-                pass
-
         self._run_trace.total_duration_ms = int((time.monotonic() - run_start) * 1000)
-        self._run_trace.flush_to_file(traces_path)
-        print(f"traces saved to: {traces_path}")
-
-        try:
-            from source.runtime.generate_dashboard import generate_dashboard
-            generate_dashboard(traces_path, dashboard_path)
-            print(f"dashboard saved to: {dashboard_path}")
-        except Exception as exc:
-            print(f"dashboard generation skipped: {exc}", file=sys.stderr)
 
         self._print_event(
             "RUN_RESULT",

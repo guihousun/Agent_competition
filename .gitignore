@@ -1,0 +1,16 @@
+.env
+.venv/
+.codegraph/
+.codex-remote-attachments/
+.learnings/
+__pycache__/
+*.py[cod]
+
+/docs/superpowers/
+/files/
+/tests/
+/source/examples/
+/source/outputs/
+
+/output.txt
+/po_output.txt
