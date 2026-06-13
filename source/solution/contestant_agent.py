@@ -4,7 +4,6 @@ import asyncio
 import json
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 from source.runtime.env_config import ModelConfig, env_bool, env_int, load_dotenv
@@ -55,6 +54,7 @@ SYSTEM_PROMPT = """
 - 相对日期、星期、偏移、节日等调用 date_compute，并把包含时间锚点的完整原句作为 expression；工作日推算使用 workday_calc。
 - 大型表格、数据库或文档优先使用适合的工具、Skill 或 data_reader，避免把无关全文塞入上下文。使用 Skill 时先 skill_load，再按说明 skill_run。
 - 多源故障证据优先用 evidence_chain_analyze 批量关联；顺序接口用例先生成完整执行计划，再用 api_test_execute 一次执行和断言。
+- Java 个税计算器相关题优先 skill_load java_tax_solver 获取修复清单和校验方法；主 Agent 自己读取源码、修复/运行/计算，不要让 Skill 直接代答。
 
 【效率与顺序】
 - 多个互不依赖的只读或纯计算工具，应在同一轮批量调用，减少模型往返。
@@ -77,9 +77,6 @@ class ContestantAgent:
 
     async def solve(self, *, question: dict[str, Any], context: AgentContext) -> str:
         load_dotenv()
-        routed = await self._try_java_tax_skill(question=question, context=context)
-        if routed is not None:
-            return routed
         if not env_bool("AGENT_DEMO_USE_LLM", True):
             raise RuntimeError("AGENT_DEMO_USE_LLM is disabled; configure a model gateway or implement ContestantAgent.solve().")
 
@@ -108,39 +105,6 @@ class ContestantAgent:
             user_prompt=user_prompt,
             context=context,
         )
-
-    async def _try_java_tax_skill(
-        self,
-        *,
-        question: dict[str, Any],
-        context: AgentContext,
-    ) -> str | None:
-        files = [str(path) for path in (question.get("files") or [])]
-        java_files = [
-            file_name
-            for file_name in files
-            if Path(file_name).name.lower().startswith("javasource_")
-            and Path(file_name).suffix.lower() == ".java"
-        ]
-        if not java_files:
-            return None
-        question_text = json.dumps(question, ensure_ascii=False)
-        if "个人所得税" not in question_text and "所得税" not in question_text:
-            return None
-
-        source_path = (context.question_dir / java_files[0]).resolve()
-        return str(
-            await context.call_tool(
-                "skill_run",
-                {
-                    "name": "java_tax_solver",
-                    "arguments": {
-                        "source_path": str(source_path),
-                        "question": question,
-                    },
-                },
-            )
-        ).strip()
 
     async def _run_model_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
         if not env_bool("AGENT_DEMO_NATIVE_TOOLS", True):
