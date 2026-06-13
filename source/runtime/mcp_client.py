@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 import uuid
 
 from source.runtime.agent_registry import AgentRegistry
@@ -119,6 +120,9 @@ class LocalMCPClient:
             if not any(key.lower() == "x-package-id" for key in headers):
                 headers["X-Package-Id"] = str(runtime_context.get("package_id") or "")
             args["headers"] = headers
+        elif name == "api_test_execute":
+            args["package_id"] = str(runtime_context.get("package_id") or "")
+            args["auth_config"] = self._discover_api_auth_config(runtime_context)
 
         # Resolve file paths for tools that read files
         path_keys = {
@@ -134,6 +138,22 @@ class LocalMCPClient:
             if key in args:
                 args[key] = str(self._resolve_allowed_file(args[key], runtime_context))
 
+        if name == "evidence_chain_analyze":
+            for key in (
+                "frontend_paths",
+                "backend_paths",
+                "har_paths",
+                "screenshot_paths",
+            ):
+                args[key] = [
+                    str(self._resolve_allowed_file(path, runtime_context))
+                    for path in (args.get(key) or [])
+                ]
+            if args.get("schema_path"):
+                args["schema_path"] = str(
+                    self._resolve_allowed_file(args["schema_path"], runtime_context)
+                )
+
         if name in {"zip_extract", "tar_extract"}:
             workspace_dir = Path(
                 runtime_context.get("workspace_dir") or runtime_context["question_dir"]
@@ -144,6 +164,39 @@ class LocalMCPClient:
             args["output_dir"] = str(output_dir)
 
         return await self._tools[name].call(args)
+
+    def _discover_api_auth_config(
+        self,
+        runtime_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        candidates: list[Path] = []
+        for raw_path in runtime_context.get("allowed_file_paths", []):
+            path = Path(raw_path).resolve()
+            if path.is_file() and path.suffix.lower() == ".json":
+                candidates.append(path)
+            elif path.is_dir():
+                candidates.extend(
+                    child
+                    for child in path.glob("*.json")
+                    if child.is_file()
+                )
+
+        matches: list[dict[str, Any]] = []
+        for path in candidates[:100]:
+            try:
+                if path.stat().st_size > 1_000_000:
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if (
+                isinstance(token, dict)
+                and isinstance(token.get("endpoint"), str)
+                and isinstance(token.get("responseTokenPath"), str)
+            ):
+                matches.append(payload)
+        return matches[0] if len(matches) == 1 else None
 
     def _resolve_allowed_file(
         self,

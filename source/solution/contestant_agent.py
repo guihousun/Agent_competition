@@ -52,6 +52,7 @@ SYSTEM_PROMPT = """
 - 事实、日期、计算、数据库、图片、接口响应等应以工具和输入资料为准，不得编造。
 - 相对日期、星期、偏移、节日等调用 date_compute，并把包含时间锚点的完整原句作为 expression；工作日推算使用 workday_calc。
 - 大型表格、数据库或文档优先使用适合的工具、Skill 或 data_reader，避免把无关全文塞入上下文。使用 Skill 时先 skill_load，再按说明 skill_run。
+- 多源故障证据优先用 evidence_chain_analyze 批量关联；顺序接口用例先生成完整执行计划，再用 api_test_execute 一次执行和断言。
 
 【效率与顺序】
 - 多个互不依赖的只读或纯计算工具，应在同一轮批量调用，减少模型往返。

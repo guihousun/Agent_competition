@@ -17,6 +17,9 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+from source.solution.mcp.api_test_executor import execute_api_test_plan
+from source.solution.mcp.evidence_chain import analyze_evidence_chain
+
 
 def _safe_archive_target(output_root: Path, member_name: str) -> Path:
     normalized = member_name.replace("\\", "/")
@@ -112,6 +115,98 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
     # =========================================================================
     # P0 Competition Tools
     # =========================================================================
+
+    @register_tool(
+        name="evidence_chain_analyze",
+        description=(
+            "Parse frontend/backend logs, HAR files, screenshots, and a validation "
+            "schema; correlate complete foreground failure flows and map root causes."
+        ),
+        input_schema=object_schema(
+            {
+                "frontend_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "backend_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "har_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "schema_path": {"type": "string"},
+                "screenshot_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+            },
+            ["schema_path"],
+        ),
+        kind="mcp",
+        risk="medium",
+    )
+    def evidence_chain_analyze(
+        frontend_paths: list[str] | None = None,
+        backend_paths: list[str] | None = None,
+        har_paths: list[str] | None = None,
+        schema_path: str = "",
+        screenshot_paths: list[str] | None = None,
+    ) -> str:
+        return json.dumps(
+            analyze_evidence_chain(
+                frontend_paths=frontend_paths,
+                backend_paths=backend_paths,
+                har_paths=har_paths,
+                schema_path=schema_path,
+                screenshot_paths=screenshot_paths,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @register_tool(
+        name="api_test_execute",
+        description=(
+            "Validate and sequentially execute a complete HTTP API test plan. "
+            "Supports response variable extraction and deterministic JSON assertions."
+        ),
+        input_schema=object_schema(
+            {
+                "plan": {
+                    "type": "object",
+                    "description": (
+                        "Execution plan with base_url and ordered cases/steps. "
+                        "Each case may contain assert/expectedStatus/expectedFields/"
+                        "expectedValues; steps may extract variables by JSON path."
+                    ),
+                    "additionalProperties": True,
+                }
+            },
+            ["plan"],
+        ),
+        kind="mcp",
+        risk="high",
+    )
+    def api_test_execute(
+        plan: dict[str, Any],
+        package_id: str = "",
+        auth_config: dict[str, Any] | None = None,
+    ) -> str:
+        return json.dumps(
+            execute_api_test_plan(
+                plan=plan,
+                package_id=package_id,
+                auth_config=auth_config,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     @register_tool(
         name="http_request",
