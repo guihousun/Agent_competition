@@ -173,7 +173,7 @@ def skill_load(name: str, max_chars: int = 20000) -> str:
 
 @register_tool(
     name="skill_read_resource",
-    description="Read a text resource bundled inside a skill package, limited to references/ or assets/.",
+    description="Read a text resource bundled inside a skill package, limited to references/, assets/, or scripts/.",
     input_schema=object_schema(
         {
             "name": {

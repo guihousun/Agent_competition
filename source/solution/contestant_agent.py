@@ -125,7 +125,7 @@ class ContestantAgent:
         except OSError:
             guidance = (
                 "java_tax_solver: 修复 Java 源码，动态读取源码中的税率表、起征点和题面工资用例；"
-                "不要硬编码官方样例答案；使用 code_execute 的 python 模式运行 subprocess 获取 java -version。"
+                "不要硬编码官方样例答案；参考 scripts/tax_repair_example.py 的模式，用 code_execute 的 python 模式验证。"
             )
         return {
             "task_guidance": guidance[:8000],

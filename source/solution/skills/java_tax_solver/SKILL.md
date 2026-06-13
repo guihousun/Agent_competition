@@ -12,13 +12,14 @@ simulating it, running checks, and producing the final answer.
 
 ## Workflow
 
-1. Read the Java source with `text_read_file`.
-2. Run `java -version` through `code_execute` with Python subprocess if the answer requires the runtime version. Do not use unsupported `shell` or `bash` languages.
-3. Inspect the source before compiling. Broken contest files often contain multiple small defects; fixing only the first compiler error is not enough.
-4. Decode tax parameters from the actual source when present. Do not hardcode official sample answers, salary values, tax brackets, or deduction points.
-5. Repair the Java logic or write a small verification script that exactly mirrors the repaired logic.
-6. Test public examples first, then compute hidden salaries from the question text.
-7. Return only the format requested by the question, usually `java-version,tax1,tax2,...`.
+1. Read `scripts/tax_repair_example.py` with `skill_read_resource` when you need a concrete Python reference pattern.
+2. Read the Java source with `text_read_file`.
+3. Run `java -version` through `code_execute` with Python subprocess if the answer requires the runtime version. Do not use unsupported `shell` or `bash` languages. Copy the exact first version line from the tool output; never infer, shorten, round, or replace the version from an example.
+4. Inspect the source before compiling. Broken contest files often contain multiple small defects; fixing only the first compiler error is not enough.
+5. Decode tax parameters from the actual source when present. Do not hardcode official sample answers, salary values, tax brackets, or deduction points.
+6. Repair the Java logic or write a small verification script that exactly mirrors the repaired logic. When using `scripts/tax_repair_example.py`, reuse its `build_answer`, `extract_tax_parameters`, and `calculate_tax` pattern; do not hand-edit the tax formula unless the current source proves the rules changed.
+7. Test public examples first, then compute hidden salaries from the question text.
+8. Return only the format requested by the question, usually `java-version,tax1,tax2,...`.
 
 ## Common Defects
 
@@ -40,7 +41,14 @@ Check for these patterns in broken Java individual income tax calculators:
 ## Parameter Decoding Pattern
 
 If the source stores tax tables or deduction points in repeated Base64 strings,
-decode the strings from the source dynamically. Example Python helper to adapt:
+decode the strings from the source dynamically. The reusable reference is:
+
+```text
+scripts/tax_repair_example.py
+```
+
+Use `skill_read_resource` to read it, then adapt the pattern to the current
+source and question instead of treating it as a final-answer script.
 
 Use this tool shape for Java version and deterministic calculations:
 
@@ -90,6 +98,8 @@ still follow the actual Java source and the exact question wording.
 ## Output Checks
 
 - Include `java -version` only if the question asks for it.
+- Copy the Java version field exactly from the `code_execute` output. The version is evidence, not a calculation.
+- If `code_execute` prints a complete comma-separated final candidate after validation, copy that candidate exactly instead of recomputing it in natural language.
 - Preserve the order of salary cases as written in the question.
 - Use two decimal places when the examples use `0.00` style output.
 - Do not include Markdown, explanations, code blocks, or intermediate reasoning in the final answer.
