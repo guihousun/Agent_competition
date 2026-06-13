@@ -24,6 +24,7 @@ from source.solution.contestant_agent import ContestantAgent
 
 
 QUESTION_TIMEOUT_SECONDS = 10 * 60
+FINAL_ANSWER_RESERVE_SECONDS = 90
 
 
 class BatchRunner:
@@ -206,11 +207,17 @@ class BatchRunner:
         if on_trace_update is not None:
             on_trace_update(trace)
         try:
+            question_start = time.monotonic()
             with tempfile.TemporaryDirectory(prefix=f"agent_question_{qid}_") as temp_dir:
                 context = self._build_context(
                     question=question,
                     question_dir=question_dir,
                     workspace_dir=Path(temp_dir),
+                    soft_deadline_monotonic=(
+                        question_start + self._soft_deadline_delay(timeout_seconds)
+                        if timeout_seconds is not None
+                        else None
+                    ),
                 )
                 solve = ContestantAgent().solve(question=question, context=context)
                 if timeout_seconds is not None:
@@ -252,6 +259,7 @@ class BatchRunner:
         question: dict[str, Any],
         question_dir: Path,
         workspace_dir: Path,
+        soft_deadline_monotonic: float | None = None,
     ) -> AgentContext:
         files = question.get("files") or []
         allowed_file_paths = [
@@ -268,6 +276,7 @@ class BatchRunner:
             mcp=self.mcp,
             workspace_dir=workspace_dir.resolve(),
             package_id=self._config.package_id,
+            soft_deadline_monotonic=soft_deadline_monotonic,
         )
 
     def _question_diagnostics(
@@ -336,6 +345,10 @@ class BatchRunner:
 
     def _question_timeout_seconds(self) -> int:
         return max(1, env_int("AGENT_DEMO_QUESTION_TIMEOUT_SECONDS", QUESTION_TIMEOUT_SECONDS))
+
+    @staticmethod
+    def _soft_deadline_delay(timeout_seconds: int) -> int:
+        return max(1, timeout_seconds - FINAL_ANSWER_RESERVE_SECONDS)
 
     def _file_size(self, path: Path) -> int:
         try:

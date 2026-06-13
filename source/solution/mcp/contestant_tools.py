@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import shutil
 import stat
@@ -31,6 +32,83 @@ def _safe_archive_target(output_root: Path, member_name: str) -> Path:
     if target == output_root or not target.is_relative_to(output_root):
         raise ValueError(f"Unsafe archive member: {member_name}")
     return target
+
+
+def _archive_kind(path: Path) -> str | None:
+    if zipfile.is_zipfile(path):
+        return "zip"
+    try:
+        if tarfile.is_tarfile(path):
+            return "tar"
+    except OSError:
+        return None
+    return None
+
+
+def _extract_archive_safe(archive_path: Path, output_root: Path) -> list[Path]:
+    kind = _archive_kind(archive_path)
+    if kind == "zip":
+        extracted: list[Path] = []
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for member in zf.infolist():
+                target = _safe_archive_target(output_root, member.filename)
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"Unsafe archive member (link): {member.filename}")
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member, "r") as source, target.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                extracted.append(target)
+        return extracted
+
+    if kind == "tar":
+        extracted = []
+        with tarfile.open(archive_path, "r:*") as tf:
+            for member in tf.getmembers():
+                target = _safe_archive_target(output_root, member.name)
+                if member.issym() or member.islnk() or member.isdev():
+                    raise ValueError(f"Unsafe archive member (link/device): {member.name}")
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    raise ValueError(f"Unsafe archive member type: {member.name}")
+                source = tf.extractfile(member)
+                if source is None:
+                    raise ValueError(f"Could not read archive member: {member.name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source, target.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                extracted.append(target)
+        return extracted
+
+    raise ValueError(f"Unsupported archive format: {archive_path}")
+
+
+def _archive_member_preview(path: Path, preview_chars: int) -> tuple[str, str]:
+    try:
+        data = path.read_bytes()[: max(0, min(256_000, preview_chars * 8 + 4096))]
+    except OSError:
+        return "unreadable", ""
+    if b"\x00" in data:
+        return "binary", ""
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return "binary", ""
+    if not text:
+        return "text", ""
+    printable = sum(1 for char in text if char.isprintable() or char in "\r\n\t")
+    if printable / max(1, len(text)) < 0.85:
+        return "binary", ""
+    return "text", text[:preview_chars]
 
 
 def _java_main_class_name(code: str) -> str | None:
@@ -925,6 +1003,134 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             )
 
     @register_tool(
+        name="archive_inspect",
+        description=(
+            "Inspect ZIP/TAR archives in one call: safely extract to workspace, recursively list files, "
+            "and include short text previews. Does not classify or extract sensitive data."
+        ),
+        input_schema=object_schema(
+            {
+                "archive_path": {
+                    "type": "string",
+                    "description": "Path to ZIP/TAR/TAR.GZ/TGZ archive",
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Whether to inspect nested ZIP/TAR archives found inside",
+                    "default": True,
+                },
+                "preview_chars": {
+                    "type": "integer",
+                    "description": "Maximum text preview characters per text file",
+                    "default": 500,
+                },
+                "max_files": {
+                    "type": "integer",
+                    "description": "Maximum number of files to report",
+                    "default": 500,
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory injected by runtime; defaults to temp directory",
+                    "default": "",
+                },
+            },
+            ["archive_path"],
+        ),
+        kind="mcp",
+        risk="medium",
+    )
+    def archive_inspect(
+        archive_path: str,
+        recursive: bool = True,
+        preview_chars: int = 500,
+        max_files: int = 500,
+        output_dir: str = "",
+    ) -> str:
+        """Safely extract an archive and return recursive file inventory with text previews."""
+        source = Path(archive_path)
+        if not source.exists():
+            return json.dumps({"error": f"Archive file not found: {source}"}, ensure_ascii=False)
+
+        if not output_dir:
+            output_root = Path(tempfile.mkdtemp(prefix="archive_inspect_")).resolve()
+        else:
+            output_root = Path(output_dir).resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+
+        preview_chars = max(0, min(int(preview_chars), 4000))
+        max_files = max(1, min(int(max_files), 5000))
+        files: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        archives_extracted = 0
+        queue: list[tuple[Path, Path, str]] = [(source.resolve(), output_root, source.name)]
+        inspected_archives: set[Path] = set()
+
+        try:
+            while queue and len(files) < max_files:
+                current_archive, current_output, source_label = queue.pop(0)
+                resolved_archive = current_archive.resolve()
+                if resolved_archive in inspected_archives:
+                    continue
+                inspected_archives.add(resolved_archive)
+                try:
+                    extracted = _extract_archive_safe(resolved_archive, current_output)
+                    archives_extracted += 1
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "archive": str(resolved_archive),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    continue
+
+                for path in sorted(extracted, key=lambda item: str(item)):
+                    if len(files) >= max_files:
+                        break
+                    try:
+                        size = path.stat().st_size
+                    except OSError:
+                        size = 0
+                    rel_path = str(path.resolve().relative_to(output_root)).replace("\\", "/")
+                    kind = "archive" if _archive_kind(path) else "file"
+                    text_kind, preview = _archive_member_preview(path, preview_chars)
+                    if kind != "archive":
+                        kind = text_kind
+                    item: dict[str, Any] = {
+                        "path": rel_path,
+                        "extracted_path": str(path.resolve()),
+                        "size": size,
+                        "kind": kind,
+                        "source_archive": source_label,
+                    }
+                    if preview:
+                        item["preview"] = preview
+                    files.append(item)
+
+                    if recursive and kind == "archive":
+                        nested_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", rel_path).strip("._") or "archive"
+                        nested_output = output_root / "__nested__" / nested_name
+                        nested_output.mkdir(parents=True, exist_ok=True)
+                        queue.append((path.resolve(), nested_output, rel_path))
+
+            return json.dumps(
+                {
+                    "archive_path": str(source.resolve()),
+                    "output_dir": str(output_root),
+                    "archives_extracted": archives_extracted,
+                    "files_count": len(files),
+                    "truncated": bool(queue or len(files) >= max_files),
+                    "files": files,
+                    "errors": errors,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"Archive inspect failed: {exc}"}, ensure_ascii=False)
+
+    @register_tool(
         name="zip_extract",
         description="Extract ZIP file contents. Returns list of extracted files.",
         input_schema=object_schema(
@@ -1052,6 +1258,252 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             },
             ensure_ascii=False,
             indent=2,
+        )
+
+    @register_tool(
+        name="dataset_bundle_read",
+        description=(
+            "Read a multi-file dataset directory in one call. Recursively parses CSV, JSON, "
+            "TXT/MD/LOG, DOCX, and XLSX files, writes a normalized JSON bundle, and returns "
+            "the bundle path plus inline content when small enough. Use for audits and joins "
+            "instead of reading many evidence files one by one."
+        ),
+        input_schema=object_schema(
+            {
+                "path": {
+                    "type": "string",
+                    "description": "Dataset file or directory path",
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Recursively include files under subdirectories",
+                    "default": True,
+                },
+                "extensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional allowed extensions, e.g. ['.csv','.md','.txt']",
+                    "default": [],
+                },
+                "max_files": {
+                    "type": "integer",
+                    "description": "Maximum files to include",
+                    "default": 500,
+                },
+                "max_chars_per_text": {
+                    "type": "integer",
+                    "description": "Maximum characters retained for each text document",
+                    "default": 20000,
+                },
+                "max_rows_per_table": {
+                    "type": "integer",
+                    "description": "Maximum rows retained for each CSV/XLSX sheet",
+                    "default": 2000,
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory injected by runtime",
+                    "default": "",
+                },
+            },
+            ["path"],
+        ),
+        kind="mcp",
+        risk="low",
+    )
+    def dataset_bundle_read(
+        path: str,
+        recursive: bool = True,
+        extensions: list[str] | None = None,
+        max_files: int = 500,
+        max_chars_per_text: int = 20000,
+        max_rows_per_table: int = 2000,
+        output_dir: str = "",
+    ) -> str:
+        """Normalize a directory of related data and evidence files into one JSON bundle."""
+        source = Path(path)
+        if not source.exists():
+            return json.dumps({"error": f"Dataset path not found: {source}"}, ensure_ascii=False)
+
+        supported = {
+            ".csv",
+            ".json",
+            ".txt",
+            ".md",
+            ".markdown",
+            ".log",
+            ".docx",
+            ".xlsx",
+        }
+        requested = {
+            ext.lower() if str(ext).startswith(".") else f".{str(ext).lower()}"
+            for ext in (extensions or [])
+        }
+        allowed = requested or supported
+        max_files = max(1, min(int(max_files), 5000))
+        max_chars_per_text = max(0, min(int(max_chars_per_text), 200_000))
+        max_rows_per_table = max(1, min(int(max_rows_per_table), 20_000))
+
+        if source.is_file():
+            candidates = [source]
+            root = source.parent
+        else:
+            root = source
+            iterator = source.rglob("*") if recursive else source.glob("*")
+            candidates = [candidate for candidate in iterator if candidate.is_file()]
+        candidates = sorted(
+            (candidate for candidate in candidates if candidate.suffix.lower() in allowed),
+            key=lambda candidate: str(candidate.relative_to(root)).lower(),
+        )
+        truncated = len(candidates) > max_files
+        candidates = candidates[:max_files]
+
+        files: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for candidate in candidates:
+            relative_path = str(candidate.relative_to(root)).replace("\\", "/")
+            suffix = candidate.suffix.lower()
+            entry: dict[str, Any] = {
+                "path": relative_path,
+                "source_path": str(candidate.resolve()),
+                "extension": suffix,
+                "size": candidate.stat().st_size,
+            }
+            try:
+                if suffix == ".csv":
+                    with candidate.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+                        reader = csv.DictReader(handle)
+                        rows = []
+                        for index, row in enumerate(reader):
+                            if index >= max_rows_per_table:
+                                break
+                            rows.append(dict(row))
+                        entry.update(
+                            {
+                                "kind": "table",
+                                "columns": reader.fieldnames or [],
+                                "rows": rows,
+                                "rows_returned": len(rows),
+                            }
+                        )
+                elif suffix == ".xlsx":
+                    from openpyxl import load_workbook
+
+                    workbook = load_workbook(candidate, read_only=True, data_only=False)
+                    sheets: dict[str, Any] = {}
+                    for sheet in workbook.worksheets:
+                        values = sheet.iter_rows(values_only=True)
+                        header = next(values, ())
+                        columns = [
+                            str(value) if value is not None else f"column_{index + 1}"
+                            for index, value in enumerate(header)
+                        ]
+                        rows = []
+                        for index, values_row in enumerate(values):
+                            if index >= max_rows_per_table:
+                                break
+                            rows.append(
+                                {
+                                    columns[column_index]: value
+                                    for column_index, value in enumerate(values_row)
+                                    if column_index < len(columns)
+                                }
+                            )
+                        sheets[sheet.title] = {
+                            "columns": columns,
+                            "rows": rows,
+                            "rows_returned": len(rows),
+                        }
+                    workbook.close()
+                    entry.update({"kind": "workbook", "sheets": sheets})
+                elif suffix == ".json":
+                    text = candidate.read_text(encoding="utf-8-sig", errors="replace")
+                    entry.update({"kind": "json", "data": json.loads(text)})
+                else:
+                    text = _read_document_text(candidate)
+                    entry.update(
+                        {
+                            "kind": "text",
+                            "content": text[:max_chars_per_text],
+                            "content_chars": len(text),
+                            "content_truncated": len(text) > max_chars_per_text,
+                        }
+                    )
+                files.append(entry)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "path": relative_path,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        bundle = {
+            "root": str(root.resolve()),
+            "files_count": len(files),
+            "truncated": truncated,
+            "files": files,
+            "errors": errors,
+        }
+        output_root = (
+            Path(output_dir).resolve()
+            if output_dir
+            else Path(tempfile.mkdtemp(prefix="dataset_bundle_")).resolve()
+        )
+        output_root.mkdir(parents=True, exist_ok=True)
+        bundle_path = output_root / "dataset_bundle.json"
+        bundle_path.write_text(
+            json.dumps(bundle, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        response = {
+            "bundle_path": str(bundle_path),
+            **bundle,
+        }
+        serialized = json.dumps(response, ensure_ascii=False, indent=2, default=str)
+        if len(serialized) <= 55_000:
+            return serialized
+
+        summaries = []
+        for entry in files:
+            summary = {
+                key: entry.get(key)
+                for key in ("path", "source_path", "extension", "size", "kind")
+            }
+            if entry.get("kind") == "table":
+                summary.update(
+                    {
+                        "columns": entry.get("columns", []),
+                        "rows_returned": entry.get("rows_returned", 0),
+                    }
+                )
+            elif entry.get("kind") == "workbook":
+                summary["sheets"] = {
+                    name: {
+                        "columns": value.get("columns", []),
+                        "rows_returned": value.get("rows_returned", 0),
+                    }
+                    for name, value in entry.get("sheets", {}).items()
+                }
+            elif entry.get("kind") == "text":
+                summary["preview"] = str(entry.get("content", ""))[:500]
+                summary["content_chars"] = entry.get("content_chars", 0)
+            summaries.append(summary)
+        return json.dumps(
+            {
+                "bundle_path": str(bundle_path),
+                "root": str(root.resolve()),
+                "files_count": len(files),
+                "truncated": truncated,
+                "inline_truncated": True,
+                "files": summaries,
+                "errors": errors,
+                "instruction": "Use bundle_path for full structured content.",
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
         )
 
     @register_tool(
@@ -1414,11 +1866,17 @@ def register_tools(*, register_tool: Callable[..., Callable], object_schema: Cal
             return json.dumps({"error": f"Unsupported language: {language}"}, ensure_ascii=False)
 
         try:
+            process_env = os.environ.copy()
+            process_env.setdefault("PYTHONIOENCODING", "utf-8")
+            process_env.setdefault("PYTHONUTF8", "1")
             result = subprocess.run(
                 cmd,
                 input=stdin,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=process_env,
                 timeout=timeout,
             )
             return json.dumps(

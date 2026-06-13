@@ -128,6 +128,8 @@ class LocalMCPClient:
         path_keys = {
             "text_read_file": "path",
             "file_list": "path",
+            "dataset_bundle_read": "path",
+            "archive_inspect": "archive_path",
             "zip_extract": "zip_path",
             "tar_extract": "tar_path",
             "csv_read": "path",
@@ -141,7 +143,7 @@ class LocalMCPClient:
                     self._resolve_allowed_path(
                         args[key],
                         runtime_context,
-                        allow_directory=name == "file_list",
+                        allow_directory=name in {"file_list", "dataset_bundle_read"},
                     )
                 )
 
@@ -218,7 +220,7 @@ class LocalMCPClient:
                 resolved_items.append(resolved)
             args["items"] = resolved_items
 
-        if name in {"zip_extract", "tar_extract"}:
+        if name in {"archive_inspect", "dataset_bundle_read", "zip_extract", "tar_extract"}:
             workspace_dir = Path(
                 runtime_context.get("workspace_dir") or runtime_context["question_dir"]
             ).resolve()

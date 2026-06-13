@@ -28,8 +28,10 @@ def _tool_output_for_history(content: str) -> str:
 
 PARALLEL_SAFE_TOOLS = frozenset(
     {
+        "archive_inspect",
         "csv_aggregate",
         "csv_read",
+        "dataset_bundle_read",
         "date_compute",
         "document_search",
         "file_list",
@@ -42,6 +44,10 @@ PARALLEL_SAFE_TOOLS = frozenset(
         "text_read_file",
     }
 )
+
+
+class SoftDeadlineExceeded(Exception):
+    """Raised when the question should stop gathering evidence and answer now."""
 
 
 SYSTEM_PROMPT = """
@@ -57,6 +63,8 @@ SYSTEM_PROMPT = """
 - 多个独立只读/纯计算工具同一轮批量调用；存在依赖、网络、状态变更、解压、Skill、子 Agent 时串行。
 - 日期/工作日题统一调用 date_compute；多条日期题一次调用 date_compute(items=[...])，单条日期保留完整原句 expression。
 - 多张图片一次调用 image_read(items=[...])；读到图片后直接基于已注入图像回答，不要同参重复读取。
+- 压缩包先用 archive_inspect 一次解压并列出文件与文本预览；preview 不足或题目要求完整证据时，用 extracted_path 继续读取全文。
+- 多表、多文档、多证据目录审计先用 dataset_bundle_read 一次读取；需计算时让 code_execute 读取 bundle_path，不要把全量数据复制进代码。
 - 大表/数据库用合适工具或 Skill；Skill 先 skill_load 再按说明 skill_run。
 - 编程规范/文档问答优先用 document_search 在附件 docx/md/txt 中检索相关条款，不要为此调用 subagent。
 - 多源故障证据用 evidence_chain_analyze；顺序接口用例先规划，再 api_test_execute。
@@ -111,24 +119,37 @@ class ContestantAgent:
     def _task_guidance(self, question: dict[str, Any]) -> dict[str, str]:
         question_text = json.dumps(question, ensure_ascii=False)
         files = [str(path) for path in (question.get("files") or [])]
+        guidance_parts: list[str] = []
+
+        if "审计" in question_text and any(
+            not Path(file_name).suffix for file_name in files
+        ):
+            guidance_parts.append(
+                "这是多文件审计任务。先对题目声明的目录调用 dataset_bundle_read，一次获得表格、规则和证据；"
+                "如果需要程序计算，让 code_execute 从返回的 bundle_path 读取 JSON。"
+                "不要逐个 text_read_file，也不要把全量表格和证据复制进代码。"
+            )
+
         has_java_source = any(
             Path(file_name).name.lower().startswith("javasource_")
             and Path(file_name).suffix.lower() == ".java"
             for file_name in files
         )
-        if not has_java_source or "所得税" not in question_text:
-            return {}
+        if has_java_source and "所得税" in question_text:
+            skill_path = Path(__file__).resolve().parent / "skills" / "java_tax_solver" / "SKILL.md"
+            try:
+                guidance = skill_path.read_text(encoding="utf-8")
+            except OSError:
+                guidance = (
+                    "java_tax_solver: 修复 Java 源码，动态读取源码中的税率表、起征点和题面工资用例；"
+                    "不要硬编码官方样例答案；参考 scripts/tax_repair_example.py 的模式，用 code_execute 的 python 模式验证。"
+                )
+            guidance_parts.append(guidance[:8000])
 
-        skill_path = Path(__file__).resolve().parent / "skills" / "java_tax_solver" / "SKILL.md"
-        try:
-            guidance = skill_path.read_text(encoding="utf-8")
-        except OSError:
-            guidance = (
-                "java_tax_solver: 修复 Java 源码，动态读取源码中的税率表、起征点和题面工资用例；"
-                "不要硬编码官方样例答案；参考 scripts/tax_repair_example.py 的模式，用 code_execute 的 python 模式验证。"
-            )
+        if not guidance_parts:
+            return {}
         return {
-            "task_guidance": guidance[:8000],
+            "task_guidance": "\n\n".join(guidance_parts),
         }
 
     async def _run_model_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
@@ -188,7 +209,16 @@ class ContestantAgent:
                     client=client,
                 )
 
-            completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
+            try:
+                completion = await self._create_before_soft_deadline(
+                    client,
+                    context,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
             message = first_message(completion)
             tool_calls = self._tool_calls_from_message(message)
             content = str(message.get("content") or "")
@@ -218,7 +248,22 @@ class ContestantAgent:
                     tool_args = {}
                 prepared_calls.append((tool_name, tool_args))
 
-            tool_results = await self._execute_tool_batch(context, prepared_calls)
+            try:
+                tool_results = await self._execute_before_soft_deadline(
+                    context,
+                    prepared_calls,
+                )
+            except SoftDeadlineExceeded:
+                for tool_call, (tool_name, _) in zip(tool_calls, prepared_calls):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id", ""),
+                            "name": tool_name,
+                            "content": "已到达时间截止点，本次工具调用未完成。",
+                        }
+                    )
+                return await self._final_answer_now(messages=messages, client=client)
             for tool_call, (tool_name, _), tool_result in zip(
                 tool_calls,
                 prepared_calls,
@@ -338,7 +383,16 @@ class ContestantAgent:
 
         max_iter = max_agent_iterations()
         for step in range(1, max_iter + 1):
-            completion = await client.create(messages=messages, tools=[], tool_choice="none")
+            try:
+                completion = await self._create_before_soft_deadline(
+                    client,
+                    context,
+                    messages=messages,
+                    tools=[],
+                    tool_choice="none",
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
             content = str(first_message(completion).get("content") or "").strip()
 
             parsed = self._parse_json_object(content)
@@ -374,7 +428,13 @@ class ContestantAgent:
                 prepared_indexes.append(call_index)
                 prepared_calls.append((tool_name, tool_args))
 
-            executed_results = await self._execute_tool_batch(context, prepared_calls)
+            try:
+                executed_results = await self._execute_before_soft_deadline(
+                    context,
+                    prepared_calls,
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
             tool_results = []
             image_messages: list[dict[str, Any]] = []
             for call_index, (tool_name, _), tool_result in zip(
@@ -485,6 +545,76 @@ class ContestantAgent:
                 await self._call_tool_as_text(context, tool_name, tool_args)
             )
         return results
+
+    async def _create_before_soft_deadline(
+        self,
+        client: ChatCompletionClient,
+        context: AgentContext,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        remaining = self._soft_deadline_remaining(context)
+        if remaining is None:
+            return await client.create(**kwargs)
+        if remaining <= 0:
+            raise SoftDeadlineExceeded
+        try:
+            return await asyncio.wait_for(client.create(**kwargs), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            if (self._soft_deadline_remaining(context) or 0) <= 0:
+                raise SoftDeadlineExceeded from exc
+            raise
+
+    async def _execute_before_soft_deadline(
+        self,
+        context: AgentContext,
+        calls: list[tuple[str, dict[str, Any]]],
+    ) -> list[str]:
+        remaining = self._soft_deadline_remaining(context)
+        if remaining is None:
+            return await self._execute_tool_batch(context, calls)
+        if remaining <= 0:
+            raise SoftDeadlineExceeded
+        try:
+            return await asyncio.wait_for(
+                self._execute_tool_batch(context, calls),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as exc:
+            if (self._soft_deadline_remaining(context) or 0) <= 0:
+                raise SoftDeadlineExceeded from exc
+            raise
+
+    def _soft_deadline_remaining(self, context: AgentContext) -> float | None:
+        deadline = getattr(context, "soft_deadline_monotonic", None)
+        if deadline is None:
+            return None
+        return float(deadline) - time.monotonic()
+
+    async def _final_answer_now(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        client: ChatCompletionClient,
+    ) -> str:
+        final_messages = [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "时间即将耗尽。停止调用工具和继续复查，立即根据现有信息输出最可能的最终答案。"
+                    "只输出题目要求的答案，不解释，不留空。"
+                ),
+            },
+        ]
+        completion = await client.create(
+            messages=final_messages,
+            tools=[],
+            tool_choice="none",
+        )
+        candidate = self._clean_final_answer(
+            str(first_message(completion).get("content") or "")
+        )
+        return self._apply_output_format_hints(candidate, final_messages)
 
     async def _call_tool_as_text(self, context: AgentContext, tool_name: str, tool_args: dict[str, Any]) -> str:
         trace = get_active_trace()
@@ -639,7 +769,7 @@ class ContestantAgent:
         proposed = corrected or cleaned or original_answer
         if not self._is_format_only_correction(original_answer, proposed):
             return original_answer
-        return proposed
+        return self._apply_output_format_hints(proposed, messages)
 
     def _non_empty_checker_answer(self, value: Any, *, fallback: str) -> str:
         if not isinstance(value, str) or not value.strip():
@@ -668,6 +798,48 @@ class ContestantAgent:
             corrected_items = [item.strip() for item in corrected.split(",")]
             return original_items == corrected_items
 
+        return True
+
+    def _apply_output_format_hints(self, answer: str, messages: list[dict[str, Any]]) -> str:
+        """Apply deterministic formatting hints that do not change answer content."""
+        question_text = self._question_text_from_messages(messages)
+        if self._requires_ascii_comma(question_text) and not self._looks_like_json_answer(answer):
+            answer = answer.replace("，", ",")
+        return answer
+
+    def _question_text_from_messages(self, messages: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                parts.extend(
+                    str(item.get("text", ""))
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
+        return "\n".join(parts)
+
+    def _requires_ascii_comma(self, question_text: str) -> bool:
+        return bool(
+            re.search(
+                r"(英文|半角|ASCII)\s*(?:逗号|comma|分隔符)|(?:逗号|comma|分隔符)\s*(?:英文|半角|ASCII)",
+                question_text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _looks_like_json_answer(self, answer: str) -> bool:
+        stripped = answer.strip()
+        if not stripped.startswith(("{", "[")):
+            return False
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
         return True
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
