@@ -149,6 +149,7 @@ class BatchRunner:
     ) -> AgentContext:
         files = question.get("files") or []
         allowed_file_paths = [
+            question_dir.resolve(),
             *((question_dir / path).resolve() for path in files),
             workspace_dir.resolve(),
         ]

@@ -28,6 +28,7 @@ PARALLEL_SAFE_TOOLS = frozenset(
         "csv_aggregate",
         "csv_read",
         "date_compute",
+        "file_list",
         "mock_order_lookup",
         "mock_policy_check",
         "skill_load",
@@ -49,7 +50,7 @@ SYSTEM_PROMPT = """
 
 【能力使用】
 - question 中的 tools、skills、sub_agents 只是提示，不是权限限制；按实际需要使用 capabilities 中的可用能力。
-- 文件内容不会自动进入上下文。需要证据时读取题目声明的文件或目录，不得猜测内容或访问未声明路径。
+- 文件内容不会自动进入上下文。需要证据时读取题目附件；若附件是目录，先用 file_list 查看文件清单，再读取具体文件。
 - 事实、日期、计算、数据库、图片、接口响应等应以工具和输入资料为准，不得编造。
 - 相对日期、星期、偏移、节日等调用 date_compute，并把包含时间锚点的完整原句作为 expression；工作日推算使用 workday_calc。
 - 大型表格、数据库或文档优先使用适合的工具、Skill 或 data_reader，避免把无关全文塞入上下文。使用 Skill 时先 skill_load，再按说明 skill_run。

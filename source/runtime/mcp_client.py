@@ -127,6 +127,7 @@ class LocalMCPClient:
         # Resolve file paths for tools that read files
         path_keys = {
             "text_read_file": "path",
+            "file_list": "path",
             "zip_extract": "zip_path",
             "tar_extract": "tar_path",
             "csv_read": "path",
@@ -136,7 +137,13 @@ class LocalMCPClient:
         if name in path_keys:
             key = path_keys[name]
             if key in args:
-                args[key] = str(self._resolve_allowed_file(args[key], runtime_context))
+                args[key] = str(
+                    self._resolve_allowed_path(
+                        args[key],
+                        runtime_context,
+                        allow_directory=name == "file_list",
+                    )
+                )
 
         if name == "evidence_chain_analyze":
             for key in (
@@ -146,12 +153,12 @@ class LocalMCPClient:
                 "screenshot_paths",
             ):
                 args[key] = [
-                    str(self._resolve_allowed_file(path, runtime_context))
+                    str(self._resolve_allowed_path(path, runtime_context))
                     for path in (args.get(key) or [])
                 ]
             if args.get("schema_path"):
                 args["schema_path"] = str(
-                    self._resolve_allowed_file(args["schema_path"], runtime_context)
+                    self._resolve_allowed_path(args["schema_path"], runtime_context)
                 )
 
         if name in {"zip_extract", "tar_extract"}:
@@ -198,10 +205,12 @@ class LocalMCPClient:
                 matches.append(payload)
         return matches[0] if len(matches) == 1 else None
 
-    def _resolve_allowed_file(
+    def _resolve_allowed_path(
         self,
         raw_path: str,
         runtime_context: dict[str, Any],
+        *,
+        allow_directory: bool = False,
     ) -> Path:
         question_dir = Path(runtime_context["question_dir"]).resolve()
         target = Path(raw_path)
@@ -217,23 +226,39 @@ class LocalMCPClient:
             candidates = [
                 (allowed / raw_path).resolve()
                 for allowed in allowed_paths
-                if allowed.is_dir() and (allowed / raw_path).resolve().is_file()
+                if allowed.is_dir()
+                and (
+                    (allowed / raw_path).resolve().is_file()
+                    or allow_directory
+                    and (allowed / raw_path).resolve().is_dir()
+                )
             ]
             if len(candidates) == 1:
                 target = candidates[0]
             elif len(candidates) > 1:
                 raise PermissionError(f"File path is ambiguous within declared directories: {raw_path}")
-        if not any(self._is_allowed_file_target(target=target, allowed=allowed) for allowed in allowed_paths):
+        if not any(
+            self._is_allowed_file_target(
+                target=target,
+                allowed=allowed,
+                allow_directory=allow_directory,
+            )
+            for allowed in allowed_paths
+        ):
             raise PermissionError(f"File is not declared in the question: {raw_path}")
         if not target.exists():
             raise FileNotFoundError(str(target))
-        if not target.is_file():
+        if not allow_directory and not target.is_file():
             raise IsADirectoryError(str(target))
+        if allow_directory and not target.is_file() and not target.is_dir():
+            raise FileNotFoundError(str(target))
         return target
 
-    def _is_allowed_file_target(self, *, target: Path, allowed: Path) -> bool:
+    def _is_allowed_file_target(self, *, target: Path, allowed: Path, allow_directory: bool = False) -> bool:
         if allowed.is_file():
             return target == allowed
         if allowed.is_dir():
+            if allow_directory and target == allowed:
+                return True
             return target != allowed and target.is_relative_to(allowed)
         return target == allowed
