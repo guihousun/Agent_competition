@@ -28,52 +28,48 @@ def _tool_output_for_history(content: str) -> str:
 
 PARALLEL_SAFE_TOOLS = frozenset(
     {
-        "answer_formatter",
         "csv_aggregate",
         "csv_read",
         "date_compute",
+        "document_search",
         "file_list",
+        "image_read",
         "mock_order_lookup",
         "mock_policy_check",
         "skill_load",
         "skill_read_resource",
         "sql_query",
         "text_read_file",
-        "workday_calc",
     }
 )
 
 
 SYSTEM_PROMPT = """
-你是 Agent 大赛的参赛 Agent。目标是在无人值守环境中独立、完整、准确地完成每道题。
+你是 Agent 大赛参赛 Agent，在无人值守环境独立解题。
 
-【自治要求】
-- 不存在人机交互。不得询问用户、等待确认或要求补充信息。
-- 自行理解题意、规划步骤、选择工具、处理失败并完成验证；信息不完美时，基于现有题面和可用能力给出最佳答案。
-- 推理和工具过程仅用于内部执行，不得出现在最终答案中。
+【原则】
+- 不得询问用户或等待确认；用题面、附件和 capabilities 自主完成。
+- question 的 tools/skills/sub_agents 只是提示，不是权限限制。
+- 文件内容不会自动进入上下文；需要证据时读取附件，目录先 file_list。
+- 事实、日期、计算、数据库、图片、接口响应以工具和资料为准。
 
-【能力使用】
-- question 中的 tools、skills、sub_agents 只是提示，不是权限限制；按实际需要使用 capabilities 中的可用能力。
-- 文件内容不会自动进入上下文。需要证据时读取题目附件；若附件是目录，先用 file_list 查看文件清单，再读取具体文件。
-- 事实、日期、计算、数据库、图片、接口响应等应以工具和输入资料为准，不得编造。
-- 相对日期、星期、偏移、节日等调用 date_compute，并把包含时间锚点的完整原句作为 expression；工作日推算使用 workday_calc。
-- 大型表格、数据库或文档优先使用适合的工具、Skill 或 data_reader，避免把无关全文塞入上下文。使用 Skill 时先 skill_load，再按说明 skill_run。
-- 多源故障证据优先用 evidence_chain_analyze 批量关联；顺序接口用例先生成完整执行计划，再用 api_test_execute 一次执行和断言。
-- Java 个税计算器相关题优先 skill_load java_tax_solver 获取修复清单和校验方法；主 Agent 自己读取源码、修复/运行/计算，不要让 Skill 直接代答。
-
-【效率与顺序】
-- 多个互不依赖的只读或纯计算工具，应在同一轮批量调用，减少模型往返。
-- 工具之间存在依赖，或涉及网络请求、状态变更、代码执行、解压、Skill 执行、子 Agent 时，按依赖顺序串行执行。
-- 不重复调用相同参数。调用失败时分析错误，修正参数或选择可验证的替代方案。
+【工具策略】
+- 多个独立只读/纯计算工具同一轮批量调用；存在依赖、网络、状态变更、解压、Skill、子 Agent 时串行。
+- 日期/工作日题统一调用 date_compute；多条日期题一次调用 date_compute(items=[...])，单条日期保留完整原句 expression。
+- 多张图片一次调用 image_read(items=[...])；读到图片后直接基于已注入图像回答，不要同参重复读取。
+- 大表/数据库用合适工具或 Skill；Skill 先 skill_load 再按说明 skill_run。
+- 编程规范/文档问答优先用 document_search 在附件 docx/md/txt 中检索相关条款，不要为此调用 subagent。
+- 多源故障证据用 evidence_chain_analyze；顺序接口用例先规划，再 api_test_execute。
+- Java 个税计算器题可 skill_load java_tax_solver，但主 Agent 自己读源码、修复、运行和计算。
+- 不重复同参调用；失败后修正参数或换可验证方案。
 
 【关键示例】
-题目附件含多条独立日期描述：先调用 text_read_file；拿到全文后，在同一轮提交所有互不依赖的 date_compute/workday_calc 调用，再按原始行序汇总。若任务是“获取 token → 写接口 → 查询结果”，每一步依赖上一步，必须串行，不能并发。
+多条日期：text_read_file 后一次 date_compute(items)，按原顺序汇总。获取 token → 写接口 → 查询结果这类任务必须串行。
 
-【答案责任】
-- 主 Agent 独立负责答案正确性和完整性。提交前核对题目约束、证据、顺序、数量、精度和格式。
-- 严格遵循本题要求的原始顺序、排序、去重、字段、分隔符和精度；不要自行套用其他题目的格式规则。
-- 最终只输出答案正文。除非题目明确要求，否则不要输出解释、Markdown 代码块、<think>、过程标签或 {"answer": ...} 包装。
-- JSON 必须合法；精确匹配、列表、数字或分隔符格式以题面要求为唯一准则。
+【输出】
+- 主 Agent 负责正确性；提交前核对约束、证据、顺序、数量、精度和格式。
+- 最终只输出答案正文；除非题目要求，不输出解释、Markdown、<think>、过程标签或 {"answer": ...} 包装。
+- JSON 必须合法；字段、分隔符、排序、去重和精度严格按题面。
 """.strip()
 
 
@@ -234,26 +230,48 @@ class ContestantAgent:
                 if tool_name == "image_read":
                     try:
                         img_data = json.loads(tool_result)
-                        if img_data.get("__image__"):
+                        image_items = []
+                        if img_data.get("__images__") and isinstance(img_data.get("images"), list):
+                            image_items = [
+                                item for item in img_data["images"]
+                                if isinstance(item, dict) and item.get("__image__")
+                            ]
+                        elif img_data.get("__image__"):
+                            image_items = [img_data]
+
+                        if image_items:
                             # Add tool result with summary
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.get("id", ""),
                                 "name": tool_name,
-                                "content": f"已读取图片: {img_data['path']}",
+                                "content": "已读取图片: " + ", ".join(
+                                    str(item.get("path", "")) for item in image_items
+                                ),
                             })
                             # Inject image as multimodal user message
+                            multimodal_content: list[dict[str, Any]] = []
+                            for index, item in enumerate(image_items, start=1):
+                                image_path = str(item.get("path", ""))
+                                image_label = f"图片 {index}: {Path(image_path).name or image_path}"
+                                image_question = item.get("question") or "请描述图片内容。"
+                                multimodal_content.append({
+                                    "type": "text",
+                                    "text": (
+                                        f"{image_label}\n"
+                                        f"{image_question}\n"
+                                        "回答时保持这张图片与上述文件名的对应关系；不要再次读取同一批图片。"
+                                    ),
+                                })
+                                multimodal_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{item['mime_type']};base64,{item['base64']}"
+                                    },
+                                })
                             messages.append({
                                 "role": "user",
-                                "content": [
-                                    {"type": "text", "text": img_data.get("question", "请描述这张图片")},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:{img_data['mime_type']};base64,{img_data['base64']}"
-                                        },
-                                    },
-                                ],
+                                "content": multimodal_content,
                             })
                             image_injected = True
                     except (json.JSONDecodeError, KeyError):
@@ -358,11 +376,56 @@ class ContestantAgent:
 
             executed_results = await self._execute_tool_batch(context, prepared_calls)
             tool_results = []
+            image_messages: list[dict[str, Any]] = []
             for call_index, (tool_name, _), tool_result in zip(
                 prepared_indexes,
                 prepared_calls,
                 executed_results,
             ):
+                if tool_name == "image_read":
+                    try:
+                        img_data = json.loads(tool_result)
+                        image_items = []
+                        if img_data.get("__images__") and isinstance(img_data.get("images"), list):
+                            image_items = [
+                                item for item in img_data["images"]
+                                if isinstance(item, dict) and item.get("__image__")
+                            ]
+                        elif img_data.get("__image__"):
+                            image_items = [img_data]
+                        if image_items:
+                            tool_results.append(
+                                {
+                                    "index": call_index,
+                                    "name": tool_name,
+                                    "result": "已读取图片: " + ", ".join(
+                                        str(item.get("path", "")) for item in image_items
+                                    ),
+                                }
+                            )
+                            multimodal_content: list[dict[str, Any]] = []
+                            for index, item in enumerate(image_items, start=1):
+                                image_path = str(item.get("path", ""))
+                                image_label = f"图片 {index}: {Path(image_path).name or image_path}"
+                                image_question = item.get("question") or "请描述图片内容。"
+                                multimodal_content.append({
+                                    "type": "text",
+                                    "text": (
+                                        f"{image_label}\n"
+                                        f"{image_question}\n"
+                                        "回答时保持这张图片与上述文件名的对应关系；不要再次读取同一批图片。"
+                                    ),
+                                })
+                                multimodal_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{item['mime_type']};base64,{item['base64']}"
+                                    },
+                                })
+                            image_messages.append({"role": "user", "content": multimodal_content})
+                            continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass
                 tool_results.append(
                     {
                         "index": call_index,
@@ -385,6 +448,7 @@ class ContestantAgent:
                     )[:tool_output_max_chars()],
                 }
             )
+            messages.extend(image_messages)
 
         messages.append({"role": "user", "content": "请停止请求工具，直接输出最终答案文本。"})
         completion = await client.create(messages=messages, tools=[], tool_choice="none")

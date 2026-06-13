@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 import sys
@@ -18,8 +19,11 @@ from source.runtime.tracing import (
     create_run_trace,
     end_question_trace,
 )
-from source.runtime.env_config import ModelConfig, load_dotenv
+from source.runtime.env_config import ModelConfig, env_int, load_dotenv
 from source.solution.contestant_agent import ContestantAgent
+
+
+QUESTION_TIMEOUT_SECONDS = 10 * 60
 
 
 class BatchRunner:
@@ -70,6 +74,7 @@ class BatchRunner:
             qid = str(question.get("id", index))
             title = str(question.get("title", ""))
             description = str(question.get("description", ""))
+            question_timeout = self._question_timeout_seconds()
             self._print_event(
                 "QUESTION_START",
                 {
@@ -77,6 +82,7 @@ class BatchRunner:
                     "index": index,
                     "total": len(questions),
                     "cumulative_ms": self._elapsed_ms(run_start),
+                    "timeout_seconds": question_timeout,
                 },
             )
             self._refresh_dashboard(
@@ -99,6 +105,7 @@ class BatchRunner:
                 title=title,
                 description=description,
                 on_trace_update=trace_update,
+                timeout_seconds=question_timeout,
             )
             results[index - 1] = {
                 "id": qid,
@@ -142,6 +149,7 @@ class BatchRunner:
                     bool(str(item.get("answer", "")).strip())
                     for item in results
                 ),
+                **self._run_diagnostic_counts(),
                 "cumulative_ms": self._elapsed_ms(run_start),
                 "result_path": str(output_path),
                 "result_bytes": self._file_size(output_path),
@@ -185,6 +193,7 @@ class BatchRunner:
         title: str = "",
         description: str = "",
         on_trace_update: Callable[[QuestionTrace], None] | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         qid = str(question.get("id", "unknown"))
         trace = begin_question_trace(
@@ -203,11 +212,27 @@ class BatchRunner:
                     question_dir=question_dir,
                     workspace_dir=Path(temp_dir),
                 )
-                answer = await ContestantAgent().solve(question=question, context=context)
+                solve = ContestantAgent().solve(question=question, context=context)
+                if timeout_seconds is not None:
+                    answer = await asyncio.wait_for(solve, timeout=timeout_seconds)
+                else:
+                    answer = await solve
             end_question_trace("success", str(answer))
             return {
                 "id": qid,
                 "answer": str(answer),
+            }
+        except asyncio.TimeoutError:
+            message = f"question exceeded {timeout_seconds}s"
+            print(f"question {qid} failed: {message}", file=sys.stderr)
+            end_question_trace(
+                "error",
+                "",
+                error=f"TimeoutError: {message}",
+            )
+            return {
+                "id": qid,
+                "answer": "",
             }
         except Exception as exc:
             print(f"question {qid} failed: {exc}", file=sys.stderr)
@@ -290,6 +315,14 @@ class BatchRunner:
                 return trace
         return None
 
+    def _run_diagnostic_counts(self) -> dict[str, int]:
+        totals = {"llm_calls": 0, "tool_calls": 0}
+        for trace in self._run_trace.questions:
+            counts = trace.diagnostic_counts()
+            totals["llm_calls"] += counts["llm_calls"]
+            totals["tool_calls"] += counts["tool_calls"]
+        return totals
+
     def _split_error(self, error: str | None) -> tuple[str | None, str | None]:
         if not error:
             return None, None
@@ -300,6 +333,9 @@ class BatchRunner:
 
     def _elapsed_ms(self, start: float) -> int:
         return int((time.monotonic() - start) * 1000)
+
+    def _question_timeout_seconds(self) -> int:
+        return max(1, env_int("AGENT_DEMO_QUESTION_TIMEOUT_SECONDS", QUESTION_TIMEOUT_SECONDS))
 
     def _file_size(self, path: Path) -> int:
         try:

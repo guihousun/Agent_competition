@@ -136,7 +136,7 @@ class LocalMCPClient:
         }
         if name in path_keys:
             key = path_keys[name]
-            if key in args:
+            if key in args and args.get(key):
                 args[key] = str(
                     self._resolve_allowed_path(
                         args[key],
@@ -160,6 +160,63 @@ class LocalMCPClient:
                 args["schema_path"] = str(
                     self._resolve_allowed_path(args["schema_path"], runtime_context)
                 )
+        elif name == "document_search":
+            args["paths"] = [
+                str(
+                    self._resolve_allowed_path(
+                        path,
+                        runtime_context,
+                        allow_directory=True,
+                    )
+                )
+                for path in (args.get("paths") or [])
+            ]
+        elif name == "image_read" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                if resolved.get("path"):
+                    resolved["path"] = str(
+                        self._resolve_allowed_path(
+                            resolved["path"],
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
+        elif name == "csv_read" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                if resolved.get("path"):
+                    resolved["path"] = str(
+                        self._resolve_allowed_path(
+                            resolved["path"],
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
+        elif name == "sql_query" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                item_db_path = resolved.get("db_path") or args.get("db_path")
+                if item_db_path:
+                    resolved["db_path"] = str(
+                        self._resolve_allowed_path(
+                            item_db_path,
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
 
         if name in {"zip_extract", "tar_extract"}:
             workspace_dir = Path(

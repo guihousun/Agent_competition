@@ -158,10 +158,6 @@ class ScriptSubAgent(BaseSubAgent):
         if self.name == "answer_checker":
             payload["question"] = question
             payload["answer"] = task
-        elif self.name == "data_reader":
-            payload["question"] = task
-            payload["files"] = files
-            payload["mode"] = _infer_data_reader_mode(task)
 
         completed = subprocess.run(
             [sys.executable, str(script_path)],
@@ -190,13 +186,6 @@ class ScriptSubAgent(BaseSubAgent):
         if not isinstance(result, dict):
             raise RuntimeError(f"Sub-agent prompt builder returned non-object JSON: {script_path}")
         return result
-
-
-def _infer_data_reader_mode(task: str) -> str:
-    normalized = task.lower()
-    overview_markers = ("overview", "探查", "概览", "结构", "schema", "全貌")
-    return "overview" if any(marker in normalized for marker in overview_markers) else "query"
-
 
 def _tool_calls_from_message(message: dict[str, Any]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
