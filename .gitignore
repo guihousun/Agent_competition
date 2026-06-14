@@ -14,3 +14,6 @@ __pycache__/
 
 /output.txt
 /po_output.txt
+
+/hello-world-video/node_modules/
+/hello-world-video/out/
