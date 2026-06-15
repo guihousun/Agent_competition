@@ -96,6 +96,59 @@ def text_read_file(path: str, max_chars: int = 64000) -> str:
 
 
 @register_tool(
+    name="file_list",
+    description="List files under an allowed question directory. Use this before reading a declared directory.",
+    input_schema=object_schema(
+        {
+            "path": {
+                "type": "string",
+                "description": "Allowed directory or file path to inspect.",
+            },
+            "max_entries": {
+                "type": "integer",
+                "description": "Maximum number of entries to return.",
+                "default": 200,
+            },
+        },
+        ["path"],
+    ),
+    risk="low",
+)
+def file_list(path: str, max_entries: int = 200) -> str:
+    target = Path(path)
+    if target.is_file():
+        return _json(
+            {
+                "path": str(target),
+                "type": "file",
+                "size": target.stat().st_size,
+            }
+        )
+    if not target.is_dir():
+        raise FileNotFoundError(str(target))
+
+    entries = []
+    for child in sorted(target.rglob("*")):
+        if len(entries) >= max_entries:
+            break
+        if child.is_file():
+            entries.append(
+                {
+                    "path": str(child.relative_to(target)),
+                    "size": child.stat().st_size,
+                }
+            )
+    return _json(
+        {
+            "path": str(target),
+            "type": "directory",
+            "files": entries,
+            "truncated": len(entries) >= max_entries,
+        }
+    )
+
+
+@register_tool(
     name="skill_load",
     description="Load full SKILL.md instructions for a discovered skill package. Use this before applying or executing a named skill.",
     input_schema=object_schema(
@@ -120,7 +173,7 @@ def skill_load(name: str, max_chars: int = 20000) -> str:
 
 @register_tool(
     name="skill_read_resource",
-    description="Read a text resource bundled inside a skill package, limited to references/ or assets/.",
+    description="Read a text resource bundled inside a skill package, limited to references/, assets/, or scripts/.",
     input_schema=object_schema(
         {
             "name": {

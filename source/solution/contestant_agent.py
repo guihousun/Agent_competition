@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from source.runtime.env_config import ModelConfig, env_bool, env_int, load_dotenv
@@ -16,237 +18,66 @@ def tool_output_max_chars() -> int:
     return env_int("AGENT_DEMO_TOOL_OUTPUT_MAX_CHARS", 65_536)
 
 
+def max_agent_iterations() -> int:
+    return max(1, env_int("AGENT_DEMO_MAX_ITER", 10))
+
+
 def _tool_output_for_history(content: str) -> str:
     return content[:tool_output_max_chars()]
 
 
+PARALLEL_SAFE_TOOLS = frozenset(
+    {
+        "archive_inspect",
+        "csv_aggregate",
+        "csv_read",
+        "dataset_bundle_read",
+        "date_compute",
+        "document_search",
+        "file_list",
+        "image_read",
+        "mock_order_lookup",
+        "mock_policy_check",
+        "skill_load",
+        "skill_read_resource",
+        "sql_query",
+        "text_read_file",
+    }
+)
+
+
+class SoftDeadlineExceeded(Exception):
+    """Raised when the question should stop gathering evidence and answer now."""
+
+
 SYSTEM_PROMPT = """
-你是 skill 蒸馏攻防 Agent 大赛的参赛 Agent。
+你是 Agent 大赛参赛 Agent，在无人值守环境独立解题。
 
-【核心规则】
-- 工具调用和推理过程不要输出到最终答案中
-- 最终答案只包含题目要求的内容，不要有 Thought/Action/Observation/Final Answer 等标签
-- 内部推理过程对用户不可见
+【原则】
+- 不得询问用户或等待确认；用题面、附件和 capabilities 自主完成。
+- question 的 tools/skills/sub_agents 只是提示，不是权限限制。
+- 文件内容不会自动进入上下文；需要证据时读取附件，目录先 file_list。
+- 事实、日期、计算、数据库、图片、接口响应以工具和资料为准。
 
-使用 Plan → Execute 框架解题：
+【工具策略】
+- 多个独立只读/纯计算工具同一轮批量调用；存在依赖、网络、状态变更、解压、Skill、子 Agent 时串行。
+- 日期/工作日题统一调用 date_compute；多条日期题一次调用 date_compute(items=[...])，单条日期保留完整原句 expression。
+- 多张图片一次调用 image_read(items=[...])；读到图片后直接基于已注入图像回答，不要同参重复读取。
+- 压缩包先用 archive_inspect 一次解压并列出文件与文本预览；preview 不足或题目要求完整证据时，用 extracted_path 继续读取全文。
+- 多表、多文档、多证据目录审计先用 dataset_bundle_read 一次读取；需计算时让 code_execute 读取 bundle_path，不要把全量数据复制进代码。
+- 大表/数据库用合适工具或 Skill；Skill 先 skill_load 再按说明 skill_run。
+- 编程规范/文档问答优先用 document_search 在附件 docx/md/txt 中检索相关条款，不要为此调用 subagent。
+- 多源故障证据用 evidence_chain_analyze；顺序接口用例先规划，再 api_test_execute。
+- Java 个税计算器题可 skill_load java_tax_solver，但主 Agent 自己读源码、修复、运行和计算。
+- 不重复同参调用；失败后修正参数或换可验证方案。
 
-【Phase 1：规划】
-收到题目后，在内部完成规划（不要输出）：
-1. 题目类型判断
-2. 需要读取哪些文件
-3. 是否有大量数据需要 data_reader 预读
-4. 执行步骤拆解
-5. 预期答案格式
+【关键示例】
+多条日期：text_read_file 后一次 date_compute(items)，按原顺序汇总。获取 token → 写接口 → 查询结果这类任务必须串行。
 
-【Phase 2：执行】
-按规划逐步调用工具，每步在内部思考（不要输出 Thought/Action/Observation）
-
-【Phase 3：验证】
-输出前通过 answer_checker 验证
-
-【数据处理策略】（关键，减少上下文膨胀）
-
-遇到 CSV/DB/日志等大文件时，使用 data_reader 子代理分两阶段处理：
-
-阶段 1：数据探查（mode="overview"）
-  agent_delegate(agent_name="data_reader",
-                 task="探查数据结构",
-                 context_text="文件路径")
-
-  data_reader 返回数据全貌：schema、行数、字段、值域、关联关系
-  → 不做任何筛选，你基于全貌决定下一步
-
-阶段 2：精确查询（mode="query"）
-  agent_delegate(agent_name="data_reader",
-                 task="具体查询指令，如：找出 status=已完成 且 amount>=50000 的行",
-                 context_text="文件路径")
-
-  data_reader 执行精确查询，返回结构化结果
-
-何时用 data_reader：
-- CSV > 50 行 → 先 overview，再 query
-- SQLite 数据库 → overview 返回表结构，query 执行 SQL
-- 多封邮件/日志 → overview 返回结构，query 提取关键段落
-
-何时直接读：
-- 小文件（<50行）→ text_read_file 直接读
-- 已知精确行范围 → csv_read 带 offset/limit
-
-【工具选择策略】
-- 读取小文件 → text_read_file
-- 读取图片（PNG/JPG/BMP/GIF/WebP） → image_read（自动调用视觉模型识别内容）
-- 预读大文件 → data_reader 子代理（agent_delegate）
-- 日期计算（明天/下周X/去年今天/N天后） → date_compute
-- 工作日计算（N 个工作日后） → workday_calc
-- 数据分析/聚合 → data_analyzer skill（先 skill_load）
-- 文档搜索 → document_searcher skill（先 skill_load）
-- HTTP 请求 → http_request
-- 代码执行 → code_execute
-- 压缩包解压 → zip_extract / tar_extract
-- 数据库查询 → sql_query
-- 答案格式化 → answer_formatter
-
-【Few-shot 示例】
-
-示例 1 - 日期计算（必须用工具）：
-题目："今天是 2026-05-06，帮我算下周二是几号"
-❌ 错误：直接心算回答 2026-05-13
-✓ 正确：
-  1. 调用 date_compute(expression="下周二是几号", base_date="2026-05-06")
-  2. 工具返回 {"result": "2026-05-12"}
-  3. 输出 2026-05-12
-
-示例 2 - 工作日计算（必须用工具）：
-题目："2026-12-21 后 5 个工作日是哪天"
-❌ 错误：直接心算回答 2026-12-26（12-25 是圣诞节，算法未知）
-✓ 正确：
-  1. 调用 workday_calc(start_date="2026-12-21", days=5)
-  2. 工具返回 {"result": "2026-12-28"}
-  3. 输出 2026-12-28
-
-示例 3 - 数据库查询（必须用工具）：
-题目："查 chat_history.db 中所有包含 'DevPilot' 的消息"
-❌ 错误：编造 SQL 或跳过查询
-✓ 正确：
-  1. 调用 sql_query(db_path="chat_history.db",
-                    query="SELECT * FROM messages WHERE content LIKE '%DevPilot%'")
-  2. 工具返回结果数组
-  3. 基于结果回答
-
-示例 4 - 图片识别（必须用工具）：
-题目："读取 error_screenshot.png 中的错误信息"
-❌ 错误：跳过图片或编造内容
-✓ 正确：
-  1. 调用 image_read(path="error_screenshot.png", question="图片中显示了什么错误信息？")
-  2. 工具返回 {"description": "图片显示 NullPointerException at line 42..."}
-  3. 基于描述回答
-
-【关键原则】
-
-【Skill 使用流程】
-1. skill_load 加载 skill（获取完整说明）
-2. 按 SKILL.md 指示调用 skill_run
-3. 分析结果
-
-【关键原则】
-- 每次只调用一个工具，等待结果后再决定下一步
-- 如果工具调用失败，分析错误原因并尝试替代方案
-- 不要重复调用相同参数的工具
-- 文件路径使用题目中声明的路径，不要尝试其他路径
-
-【日期计算规则】（极易出错，必须严格遵守）
-
-所有日期相关计算必须调用工具，不得自行心算！
-
-必须调用 date_compute 工具的场景：
-- 相对日期：明天/后天/昨天/前天/大后天
-- 星期计算：上周X/下周X/本周X/这周X
-- 年份计算：去年今天/明年今天/N年后
-- 偏移计算：N天后/N周后/N小时后
-- 节日查询：儿童节/圣诞节/元旦/春节
-- 周次计算：第N周/N周后是几号
-
-调用 date_compute 时：
-- expression 必须传入题目中的完整原句，不能只截取“100小时后”“上周二”“第2周的周五”等片段
-- 原句包含具体小时、周次起点或相对日期锚点时，必须保留这些信息
-- base_date 只用于补充明确基准，不得替代原句中的时间和语义上下文
-
-必须调用 workday_calc 工具的场景：
-- "N 个工作日后"
-- "工作日推算"
-- "自然日 vs 工作日"
-
-【日期计算常见错误】
-1. "下周二" 不是 "下下周二"，是本周之后的第一个周二
-2. "上周四" 不是 "上上周四"，是本周之前的最后一个周四
-3. 5月6日(周三) 的 "下周二" = 5月12日（5月6日+6天），不是5月13日
-4. 跨年日期需要正确处理年份（如"去年今天"从12月算到1月）
-
-【自检强化】
-在自检阶段，必须逐一核对：
-1. 日期题：是否所有日期计算都调用了 date_compute / workday_calc 工具？
-2. 数字题：是否所有数字都精确（无千分位、无单位）？
-3. 列表题：是否排序去重？
-4. 字段匹配：JSON 字段是否按字母顺序？
-
-【Answer Checker 使用流程】
-
-在输出最终答案前，必须调用 answer_checker 验证答案：
-
-1. 调用 agent_delegate:
-   - agent_name: "answer_checker"
-   - task: 完整的题目描述 + 你的答案
-   - context_text: 工具返回的原始结果
-
-2. 分析 answer_checker 返回：
-   - overall_valid: true → 直接输出答案
-   - overall_valid: false → 根据 fix_suggestions 修改答案
-
-3. 如果 answer_checker 指出错误：
-   - 根据 fix_suggestions 修改答案
-   - 再次调用 answer_checker 验证
-   - 最多重试 2 次
-
-示例：
-```
-调用：agent_delegate(agent_name="answer_checker",
-                    task="题目：今天是 2026-05-06，下周二几号？答案：2026-05-13",
-                    context_text="date_compute 返回：2026-05-12")
-
-返回：{"overall_valid": false,
-       "fix_suggestions": ["Change '2026-05-13' to '2026-05-12'"]}
-
-修改：将答案改为 2026-05-12
-再次验证：overall_valid = true → 输出
-```
-
-【答案格式规则】（必须严格遵守，违反则不得分）
-
-1. 只输出答案正文，不要：
-   - 解释说明（"答案是..."、"根据分析..."）
-   - Markdown 代码块（```json ... ```）
-   - <think> 标签
-   - 结果对象包装（{"answer": "..."}）
-
-2. 根据题目类型选择格式：
-
-   a) 精确匹配题：
-      - 直接输出文本本身，去除首尾空白
-      - ✓ mock-file-read-ok
-      -  "mock-file-read-ok"
-      - ✗ 答案是：mock-file-read-ok
-
-   b) JSON 字段匹配题：
-      - 输出严格 JSON，字段按字母顺序排列
-      - ✓ {"amount": 100, "supplier": "A"}
-      - ✗ {"supplier": "A", "amount": 100}
-
-   c) 列表匹配题：
-      - 输出 JSON 数组，元素排序去重
-      - ✓ ["A", "B", "C"]
-      - ✗ ["C", "A", "B"]
-      - ✗ ["A", "B", "B", "C"]
-
-   d) 逗号分隔题：
-      - 只输出逗号分隔的值，不要表格、不要说明、不要"VERIFIED"
-      - ✓ PO-001,PO-002,PO-003
-      - ✗ | PO | 原因 |\n|---|---|\nPO-001,PO-002
-
-   e) 数字答案：
-      - 不要单位，不要千分位
-      - 保留题目要求的精度
-      - ✓ 1234.56
-      - ✗ 1,234.56
-      - ✗ 1234.56 元
-
-3. 如果不确定格式，调用 answer_formatter 工具格式化
-
-4. 最终输出前自检：
-   - 是否有遗漏的字段？
-   - 列表是否完整？
-   - 数字精度是否正确？
-
-最终只输出题目要求的答案正文。不要输出思考过程、markdown、代码块、<think> 标签、结果对象或额外元数据字段。
+【输出】
+- 主 Agent 负责正确性；提交前核对约束、证据、顺序、数量、精度和格式。
+- 最终只输出答案正文；除非题目要求，不输出解释、Markdown、<think>、过程标签或 {"answer": ...} 包装。
+- JSON 必须合法；字段、分隔符、排序、去重和精度严格按题面。
 """.strip()
 
 
@@ -261,17 +92,19 @@ class ContestantAgent:
         # 参赛者主要改这里：
         # - question 是赛方运行器传入的公开题面对象，只包含 id/question/files 等可见字段。
         # - question["files"] 是本题允许读取的文件或目录列表，文件内容不会自动进入上下文。
+        # - question 中的 tools/skills/sub_agents 是赛题提示，不会限制默认开放的能力。
         # - context 提供当前 solution 自动发现到的 MCP tools、skills、sub-agents 以及 call_tool(...) 调用入口。
         # - available_tools / available_skills / available_sub_agents 会一起传给模型，供主 Agent 自己决定是否调用。
         user_prompt = json.dumps(
             {
                 "question": question,
-                "files": question.get("files") or [],
-                "available_tools": context.available_tools,
-                "available_skills": context.available_skills,
-                "available_sub_agents": context.available_agents,
-                "tool_usage": "Call tools only when useful. Use text_read_file to read declared files; use skill_load before skill_run; use agent_delegate for sub-agents.",
-                "final_output": "Return only the final answer text.",
+                "capabilities": {
+                    "tools": context.available_tools,
+                    "skills": context.available_skills,
+                    "sub_agents": context.available_agents,
+                },
+                **self._task_guidance(question),
+                "instruction": "Treat question capability fields as hints, not restrictions. Solve autonomously and return only the final answer.",
             },
             ensure_ascii=False,
             indent=2,
@@ -282,6 +115,42 @@ class ContestantAgent:
             user_prompt=user_prompt,
             context=context,
         )
+
+    def _task_guidance(self, question: dict[str, Any]) -> dict[str, str]:
+        question_text = json.dumps(question, ensure_ascii=False)
+        files = [str(path) for path in (question.get("files") or [])]
+        guidance_parts: list[str] = []
+
+        if "审计" in question_text and any(
+            not Path(file_name).suffix for file_name in files
+        ):
+            guidance_parts.append(
+                "这是多文件审计任务。先对题目声明的目录调用 dataset_bundle_read，一次获得表格、规则和证据；"
+                "如果需要程序计算，让 code_execute 从返回的 bundle_path 读取 JSON。"
+                "不要逐个 text_read_file，也不要把全量表格和证据复制进代码。"
+            )
+
+        has_java_source = any(
+            Path(file_name).name.lower().startswith("javasource_")
+            and Path(file_name).suffix.lower() == ".java"
+            for file_name in files
+        )
+        if has_java_source and "所得税" in question_text:
+            skill_path = Path(__file__).resolve().parent / "skills" / "java_tax_solver" / "SKILL.md"
+            try:
+                guidance = skill_path.read_text(encoding="utf-8")
+            except OSError:
+                guidance = (
+                    "java_tax_solver: 修复 Java 源码，动态读取源码中的税率表、起征点和题面工资用例；"
+                    "不要硬编码官方样例答案；参考 scripts/tax_repair_example.py 的模式，用 code_execute 的 python 模式验证。"
+                )
+            guidance_parts.append(guidance[:8000])
+
+        if not guidance_parts:
+            return {}
+        return {
+            "task_guidance": "\n\n".join(guidance_parts),
+        }
 
     async def _run_model_loop(self, *, system_prompt: str, user_prompt: str, context: AgentContext) -> str:
         if not env_bool("AGENT_DEMO_NATIVE_TOOLS", True):
@@ -331,7 +200,7 @@ class ContestantAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 100)
+        max_iter = max_agent_iterations()
         for step in range(1, max_iter + 1):
             # Context compression: when approaching 256k limit, compress older messages
             if should_compress(messages, limit=200_000):
@@ -340,7 +209,16 @@ class ContestantAgent:
                     client=client,
                 )
 
-            completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
+            try:
+                completion = await self._create_before_soft_deadline(
+                    client,
+                    context,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
             message = first_message(completion)
             tool_calls = self._tool_calls_from_message(message)
             content = str(message.get("content") or "")
@@ -360,6 +238,7 @@ class ContestantAgent:
                 messages.append({"role": "user", "content": "请输出最终答案文本。"})
                 continue
 
+            prepared_calls = []
             for tool_call in tool_calls:
                 tool_name = self._tool_call_name(tool_call)
                 args_text = self._tool_call_arguments(tool_call)
@@ -367,33 +246,77 @@ class ContestantAgent:
                     tool_args = json.loads(args_text)
                 except json.JSONDecodeError:
                     tool_args = {}
-                tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
+                prepared_calls.append((tool_name, tool_args))
+
+            try:
+                tool_results = await self._execute_before_soft_deadline(
+                    context,
+                    prepared_calls,
+                )
+            except SoftDeadlineExceeded:
+                for tool_call, (tool_name, _) in zip(tool_calls, prepared_calls):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id", ""),
+                            "name": tool_name,
+                            "content": "已到达时间截止点，本次工具调用未完成。",
+                        }
+                    )
+                return await self._final_answer_now(messages=messages, client=client)
+            for tool_call, (tool_name, _), tool_result in zip(
+                tool_calls,
+                prepared_calls,
+                tool_results,
+            ):
 
                 # Check if this is an image result — inject as multimodal content
                 image_injected = False
                 if tool_name == "image_read":
                     try:
                         img_data = json.loads(tool_result)
-                        if img_data.get("__image__"):
+                        image_items = []
+                        if img_data.get("__images__") and isinstance(img_data.get("images"), list):
+                            image_items = [
+                                item for item in img_data["images"]
+                                if isinstance(item, dict) and item.get("__image__")
+                            ]
+                        elif img_data.get("__image__"):
+                            image_items = [img_data]
+
+                        if image_items:
                             # Add tool result with summary
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.get("id", ""),
                                 "name": tool_name,
-                                "content": f"已读取图片: {img_data['path']}",
+                                "content": "已读取图片: " + ", ".join(
+                                    str(item.get("path", "")) for item in image_items
+                                ),
                             })
                             # Inject image as multimodal user message
+                            multimodal_content: list[dict[str, Any]] = []
+                            for index, item in enumerate(image_items, start=1):
+                                image_path = str(item.get("path", ""))
+                                image_label = f"图片 {index}: {Path(image_path).name or image_path}"
+                                image_question = item.get("question") or "请描述图片内容。"
+                                multimodal_content.append({
+                                    "type": "text",
+                                    "text": (
+                                        f"{image_label}\n"
+                                        f"{image_question}\n"
+                                        "回答时保持这张图片与上述文件名的对应关系；不要再次读取同一批图片。"
+                                    ),
+                                })
+                                multimodal_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{item['mime_type']};base64,{item['base64']}"
+                                    },
+                                })
                             messages.append({
                                 "role": "user",
-                                "content": [
-                                    {"type": "text", "text": img_data.get("question", "请描述这张图片")},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:{img_data['mime_type']};base64,{img_data['base64']}"
-                                        },
-                                    },
-                                ],
+                                "content": multimodal_content,
                             })
                             image_injected = True
                     except (json.JSONDecodeError, KeyError):
@@ -438,6 +361,7 @@ class ContestantAgent:
             + "\n\n当前模型网关可能不支持原生 tools 字段。"
             + "\n需要工具时，只输出 JSON，且第一个字符必须是 {，不要输出 markdown 代码块或思考过程："
             + '{"tool_calls":[{"name":"工具名","arguments":{}}]}'
+            + "\n彼此独立的只读工具应放入同一个 tool_calls 数组；存在依赖或副作用时按顺序分轮请求。"
             + "\n任务完成时，直接输出最终答案文本；不要包成结果对象。"
         )
 
@@ -457,20 +381,37 @@ class ContestantAgent:
             },
         ]
 
-        max_iter = env_int("AGENT_DEMO_MAX_ITER", 6)
+        max_iter = max_agent_iterations()
         for step in range(1, max_iter + 1):
-            completion = await client.create(messages=messages, tools=[], tool_choice="none")
+            try:
+                completion = await self._create_before_soft_deadline(
+                    client,
+                    context,
+                    messages=messages,
+                    tools=[],
+                    tool_choice="none",
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
             content = str(first_message(completion).get("content") or "").strip()
 
             parsed = self._parse_json_object(content)
             tool_calls = self._json_prompt_tool_calls(parsed) if parsed else None
             if not tool_calls:
                 if content:
-                    return self._clean_final_answer(content)
+                    candidate = self._clean_final_answer(content)
+                    return await self._verify_and_fix(
+                        candidate=candidate,
+                        messages=messages,
+                        client=client,
+                        tools=tools,
+                        context=context,
+                    )
                 messages.append({"role": "user", "content": "请输出最终答案文本，或输出 tool_calls JSON。"})
                 continue
 
-            tool_results = []
+            prepared_calls = []
+            prepared_indexes = []
             for call_index, tool_call in enumerate(tool_calls):
                 if not isinstance(tool_call, dict):
                     continue
@@ -484,11 +425,72 @@ class ContestantAgent:
                     }
                 if not isinstance(tool_args, dict):
                     tool_args = {}
+                prepared_indexes.append(call_index)
+                prepared_calls.append((tool_name, tool_args))
+
+            try:
+                executed_results = await self._execute_before_soft_deadline(
+                    context,
+                    prepared_calls,
+                )
+            except SoftDeadlineExceeded:
+                return await self._final_answer_now(messages=messages, client=client)
+            tool_results = []
+            image_messages: list[dict[str, Any]] = []
+            for call_index, (tool_name, _), tool_result in zip(
+                prepared_indexes,
+                prepared_calls,
+                executed_results,
+            ):
+                if tool_name == "image_read":
+                    try:
+                        img_data = json.loads(tool_result)
+                        image_items = []
+                        if img_data.get("__images__") and isinstance(img_data.get("images"), list):
+                            image_items = [
+                                item for item in img_data["images"]
+                                if isinstance(item, dict) and item.get("__image__")
+                            ]
+                        elif img_data.get("__image__"):
+                            image_items = [img_data]
+                        if image_items:
+                            tool_results.append(
+                                {
+                                    "index": call_index,
+                                    "name": tool_name,
+                                    "result": "已读取图片: " + ", ".join(
+                                        str(item.get("path", "")) for item in image_items
+                                    ),
+                                }
+                            )
+                            multimodal_content: list[dict[str, Any]] = []
+                            for index, item in enumerate(image_items, start=1):
+                                image_path = str(item.get("path", ""))
+                                image_label = f"图片 {index}: {Path(image_path).name or image_path}"
+                                image_question = item.get("question") or "请描述图片内容。"
+                                multimodal_content.append({
+                                    "type": "text",
+                                    "text": (
+                                        f"{image_label}\n"
+                                        f"{image_question}\n"
+                                        "回答时保持这张图片与上述文件名的对应关系；不要再次读取同一批图片。"
+                                    ),
+                                })
+                                multimodal_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{item['mime_type']};base64,{item['base64']}"
+                                    },
+                                })
+                            image_messages.append({"role": "user", "content": multimodal_content})
+                            continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass
                 tool_results.append(
                     {
                         "index": call_index,
                         "name": tool_name,
-                        "result": await self._call_tool_as_text(context, tool_name, tool_args),
+                        "result": tool_result,
                     }
                 )
 
@@ -506,10 +508,113 @@ class ContestantAgent:
                     )[:tool_output_max_chars()],
                 }
             )
+            messages.extend(image_messages)
 
         messages.append({"role": "user", "content": "请停止请求工具，直接输出最终答案文本。"})
         completion = await client.create(messages=messages, tools=[], tool_choice="none")
-        return self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        candidate = self._clean_final_answer(str(first_message(completion).get("content") or ""))
+        return await self._verify_and_fix(
+            candidate=candidate,
+            messages=messages,
+            client=client,
+            tools=tools,
+            context=context,
+        )
+
+    async def _execute_tool_batch(
+        self,
+        context: AgentContext,
+        calls: list[tuple[str, dict[str, Any]]],
+    ) -> list[str]:
+        if len(calls) > 1 and all(
+            tool_name in PARALLEL_SAFE_TOOLS
+            for tool_name, _ in calls
+        ):
+            return list(
+                await asyncio.gather(
+                    *(
+                        self._call_tool_as_text(context, tool_name, tool_args)
+                        for tool_name, tool_args in calls
+                    )
+                )
+            )
+
+        results = []
+        for tool_name, tool_args in calls:
+            results.append(
+                await self._call_tool_as_text(context, tool_name, tool_args)
+            )
+        return results
+
+    async def _create_before_soft_deadline(
+        self,
+        client: ChatCompletionClient,
+        context: AgentContext,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        remaining = self._soft_deadline_remaining(context)
+        if remaining is None:
+            return await client.create(**kwargs)
+        if remaining <= 0:
+            raise SoftDeadlineExceeded
+        try:
+            return await asyncio.wait_for(client.create(**kwargs), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            if (self._soft_deadline_remaining(context) or 0) <= 0:
+                raise SoftDeadlineExceeded from exc
+            raise
+
+    async def _execute_before_soft_deadline(
+        self,
+        context: AgentContext,
+        calls: list[tuple[str, dict[str, Any]]],
+    ) -> list[str]:
+        remaining = self._soft_deadline_remaining(context)
+        if remaining is None:
+            return await self._execute_tool_batch(context, calls)
+        if remaining <= 0:
+            raise SoftDeadlineExceeded
+        try:
+            return await asyncio.wait_for(
+                self._execute_tool_batch(context, calls),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as exc:
+            if (self._soft_deadline_remaining(context) or 0) <= 0:
+                raise SoftDeadlineExceeded from exc
+            raise
+
+    def _soft_deadline_remaining(self, context: AgentContext) -> float | None:
+        deadline = getattr(context, "soft_deadline_monotonic", None)
+        if deadline is None:
+            return None
+        return float(deadline) - time.monotonic()
+
+    async def _final_answer_now(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        client: ChatCompletionClient,
+    ) -> str:
+        final_messages = [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "时间即将耗尽。停止调用工具和继续复查，立即根据现有信息输出最可能的最终答案。"
+                    "只输出题目要求的答案，不解释，不留空。"
+                ),
+            },
+        ]
+        completion = await client.create(
+            messages=final_messages,
+            tools=[],
+            tool_choice="none",
+        )
+        candidate = self._clean_final_answer(
+            str(first_message(completion).get("content") or "")
+        )
+        return self._apply_output_format_hints(candidate, final_messages)
 
     async def _call_tool_as_text(self, context: AgentContext, tool_name: str, tool_args: dict[str, Any]) -> str:
         trace = get_active_trace()
@@ -628,109 +733,114 @@ class ContestantAgent:
         tools: list,
         context: "AgentContext",
     ) -> str:
-        """LangGraph-style verification pipeline:
-        1. Call answer_checker
-        2. If valid → return
-        3. If format-only issues → code-fix and return
-        4. If content/logic errors → send back to LLM for fix, loop
-        """
-        max_fix_rounds = env_int("AGENT_DEMO_MAX_FIX_ROUNDS", 2)
-        verification_context = self._verification_context(messages)
-
-        for fix_round in range(max_fix_rounds):
-            # Call answer_checker — it validates AND cleans
+        """Run one format-only check and otherwise preserve the main answer."""
+        original_answer = self._clean_final_answer(candidate)
+        try:
             checker_result = await self._call_tool_as_text(
                 context, "agent_delegate",
                 {
                     "agent_name": "answer_checker",
-                    "task": candidate,
-                    "context_text": verification_context,
+                    "task": original_answer,
+                    "context_text": "",
                 },
             )
+        except Exception:
+            return original_answer
 
+        try:
+            checker = json.loads(checker_result)
+        except (json.JSONDecodeError, TypeError):
+            return original_answer
+        if not isinstance(checker, dict):
+            return original_answer
+
+        overall_valid = checker.get("overall_valid")
+        if not isinstance(overall_valid, bool):
+            return original_answer
+
+        cleaned = self._non_empty_checker_answer(
+            checker.get("cleaned_answer"),
+            fallback=original_answer,
+        )
+        corrected = self._non_empty_checker_answer(
+            checker.get("corrected_answer"),
+            fallback="",
+        )
+        proposed = corrected or cleaned or original_answer
+        if not self._is_format_only_correction(original_answer, proposed):
+            return original_answer
+        return self._apply_output_format_hints(proposed, messages)
+
+    def _non_empty_checker_answer(self, value: Any, *, fallback: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return fallback
+        return self._clean_final_answer(value)
+
+    def _is_format_only_correction(self, original: str, corrected: str) -> bool:
+        """Protect already-structured answers from checker semantic rewrites."""
+        if original == corrected:
+            return True
+
+        try:
+            original_json = json.loads(original)
+        except json.JSONDecodeError:
+            original_json = None
+        else:
             try:
-                checker = json.loads(checker_result)
+                return json.loads(corrected) == original_json
             except json.JSONDecodeError:
-                if fix_round + 1 < max_fix_rounds:
-                    continue
-                return candidate
-            if not isinstance(checker, dict):
-                if fix_round + 1 < max_fix_rounds:
-                    continue
-                return candidate
+                return False
 
-            # Use cleaned_answer if available (checker strips Thought/Action/Observation)
-            cleaned = checker.get("cleaned_answer", candidate)
-            overall_valid = checker.get("overall_valid")
-            if not isinstance(overall_valid, bool):
-                if fix_round + 1 < max_fix_rounds:
-                    continue
-                return candidate
+        comma_item = r"[\w./:@%+~-]+"
+        comma_list = rf"^{comma_item}(?:\s*,\s*{comma_item})+$"
+        if re.fullmatch(comma_list, original.strip()):
+            original_items = [item.strip() for item in original.split(",")]
+            corrected_items = [item.strip() for item in corrected.split(",")]
+            return original_items == corrected_items
 
-            if overall_valid:
-                return cleaned
+        return True
 
-            suggestions = checker.get("fix_suggestions", [])
-            corrected = checker.get("corrected_answer")
-            if isinstance(corrected, str) and corrected.strip():
-                corrected = self._clean_final_answer(corrected)
-                if corrected != candidate:
-                    candidate = corrected
-                    continue
-            if not suggestions:
-                return cleaned
+    def _apply_output_format_hints(self, answer: str, messages: list[dict[str, Any]]) -> str:
+        """Apply deterministic formatting hints that do not change answer content."""
+        question_text = self._question_text_from_messages(messages)
+        if self._requires_ascii_comma(question_text) and not self._looks_like_json_answer(answer):
+            answer = answer.replace("，", ",")
+        return answer
 
-            # Content/logic errors → send back to LLM for fix
-            fix_prompt = (
-                f"answer_checker 发现以下问题：\n"
-                + "\n".join(f"- {s}" for s in suggestions)
-                + f"\n\n当前答案：{cleaned}\n\n"
-                "请根据建议修正答案，直接输出修正后的答案正文。不要输出 Thought/Action/Observation。"
-            )
-            messages.append({"role": "user", "content": fix_prompt})
-            completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
-            message = first_message(completion)
-            tool_calls = self._tool_calls_from_message(message)
-            content = str(message.get("content") or "")
-            messages.append(self._assistant_message_for_history(message))
-
-            if tool_calls:
-                for tool_call in tool_calls:
-                    tool_name = self._tool_call_name(tool_call)
-                    args_text = self._tool_call_arguments(tool_call)
-                    try:
-                        tool_args = json.loads(args_text)
-                    except json.JSONDecodeError:
-                        tool_args = {}
-                    tool_result = await self._call_tool_as_text(context, tool_name, tool_args)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id", ""),
-                        "name": tool_name,
-                        "content": _tool_output_for_history(tool_result),
-                    })
-                # After tool calls, get the next response
-                completion = await client.create(messages=messages, tools=tools, tool_choice="auto")
-                message = first_message(completion)
-                content = str(message.get("content") or "")
-                messages.append(self._assistant_message_for_history(message))
-
-            candidate = self._clean_final_answer(content)
-
-        return candidate
-
-    def _verification_context(self, messages: list[dict[str, Any]]) -> str:
-        evidence: list[str] = []
-        for message in reversed(messages):
-            if message.get("role") != "tool":
+    def _question_text_from_messages(self, messages: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            if message.get("role") != "user":
                 continue
-            tool_name = str(message.get("name") or "tool")
-            content = str(message.get("content") or "")
-            evidence.append(f"[{tool_name}]\n{content}")
-            if sum(len(item) for item in evidence) >= tool_output_max_chars():
-                break
-        evidence.reverse()
-        return _tool_output_for_history("\n\n".join(evidence))
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                parts.extend(
+                    str(item.get("text", ""))
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
+        return "\n".join(parts)
+
+    def _requires_ascii_comma(self, question_text: str) -> bool:
+        return bool(
+            re.search(
+                r"(英文|半角|ASCII)\s*(?:逗号|comma|分隔符)|(?:逗号|comma|分隔符)\s*(?:英文|半角|ASCII)",
+                question_text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _looks_like_json_answer(self, answer: str) -> bool:
+        stripped = answer.strip()
+        if not stripped.startswith(("{", "[")):
+            return False
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
+        return True
 
     def _json_prompt_tool_calls(self, parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
         tool_calls = parsed.get("tool_calls")

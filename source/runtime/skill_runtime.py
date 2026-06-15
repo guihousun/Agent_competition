@@ -10,7 +10,7 @@ from typing import Any
 
 SOURCE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SKILLS_DIR = SOURCE_DIR / "solution" / "skills"
-RESOURCE_ROOTS = {"references", "assets"}
+RESOURCE_ROOTS = {"references", "assets", "scripts"}
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ class SkillRuntime:
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("resource path must be a relative path inside the skill package")
         if not relative.parts or relative.parts[0] not in RESOURCE_ROOTS:
-            raise ValueError("resource path must be under references/ or assets/")
+            raise ValueError("resource path must be under references/, assets/, or scripts/")
 
         target = (skill.skill_dir / relative).resolve()
         if not target.is_relative_to(skill.skill_dir.resolve()):
@@ -233,6 +233,8 @@ def _list_resources(skill_dir: Path) -> list[str]:
         if not root.exists():
             continue
         for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
             resources.append(path.relative_to(skill_dir).as_posix())
     return resources
 

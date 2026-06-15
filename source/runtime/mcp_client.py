@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 import uuid
 
 from source.runtime.agent_registry import AgentRegistry
@@ -119,10 +120,16 @@ class LocalMCPClient:
             if not any(key.lower() == "x-package-id" for key in headers):
                 headers["X-Package-Id"] = str(runtime_context.get("package_id") or "")
             args["headers"] = headers
+        elif name == "api_test_execute":
+            args["package_id"] = str(runtime_context.get("package_id") or "")
+            args["auth_config"] = self._discover_api_auth_config(runtime_context)
 
         # Resolve file paths for tools that read files
         path_keys = {
             "text_read_file": "path",
+            "file_list": "path",
+            "dataset_bundle_read": "path",
+            "archive_inspect": "archive_path",
             "zip_extract": "zip_path",
             "tar_extract": "tar_path",
             "csv_read": "path",
@@ -131,10 +138,89 @@ class LocalMCPClient:
         }
         if name in path_keys:
             key = path_keys[name]
-            if key in args:
-                args[key] = str(self._resolve_allowed_file(args[key], runtime_context))
+            if key in args and args.get(key):
+                args[key] = str(
+                    self._resolve_allowed_path(
+                        args[key],
+                        runtime_context,
+                        allow_directory=name in {"file_list", "dataset_bundle_read"},
+                    )
+                )
 
-        if name in {"zip_extract", "tar_extract"}:
+        if name == "evidence_chain_analyze":
+            for key in (
+                "frontend_paths",
+                "backend_paths",
+                "har_paths",
+                "screenshot_paths",
+            ):
+                args[key] = [
+                    str(self._resolve_allowed_path(path, runtime_context))
+                    for path in (args.get(key) or [])
+                ]
+            if args.get("schema_path"):
+                args["schema_path"] = str(
+                    self._resolve_allowed_path(args["schema_path"], runtime_context)
+                )
+        elif name == "document_search":
+            args["paths"] = [
+                str(
+                    self._resolve_allowed_path(
+                        path,
+                        runtime_context,
+                        allow_directory=True,
+                    )
+                )
+                for path in (args.get("paths") or [])
+            ]
+        elif name == "image_read" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                if resolved.get("path"):
+                    resolved["path"] = str(
+                        self._resolve_allowed_path(
+                            resolved["path"],
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
+        elif name == "csv_read" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                if resolved.get("path"):
+                    resolved["path"] = str(
+                        self._resolve_allowed_path(
+                            resolved["path"],
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
+        elif name == "sql_query" and args.get("items"):
+            resolved_items = []
+            for item in args.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                resolved = dict(item)
+                item_db_path = resolved.get("db_path") or args.get("db_path")
+                if item_db_path:
+                    resolved["db_path"] = str(
+                        self._resolve_allowed_path(
+                            item_db_path,
+                            runtime_context,
+                        )
+                    )
+                resolved_items.append(resolved)
+            args["items"] = resolved_items
+
+        if name in {"archive_inspect", "dataset_bundle_read", "zip_extract", "tar_extract"}:
             workspace_dir = Path(
                 runtime_context.get("workspace_dir") or runtime_context["question_dir"]
             ).resolve()
@@ -145,10 +231,45 @@ class LocalMCPClient:
 
         return await self._tools[name].call(args)
 
-    def _resolve_allowed_file(
+    def _discover_api_auth_config(
+        self,
+        runtime_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        candidates: list[Path] = []
+        for raw_path in runtime_context.get("allowed_file_paths", []):
+            path = Path(raw_path).resolve()
+            if path.is_file() and path.suffix.lower() == ".json":
+                candidates.append(path)
+            elif path.is_dir():
+                candidates.extend(
+                    child
+                    for child in path.glob("*.json")
+                    if child.is_file()
+                )
+
+        matches: list[dict[str, Any]] = []
+        for path in candidates[:100]:
+            try:
+                if path.stat().st_size > 1_000_000:
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if (
+                isinstance(token, dict)
+                and isinstance(token.get("endpoint"), str)
+                and isinstance(token.get("responseTokenPath"), str)
+            ):
+                matches.append(payload)
+        return matches[0] if len(matches) == 1 else None
+
+    def _resolve_allowed_path(
         self,
         raw_path: str,
         runtime_context: dict[str, Any],
+        *,
+        allow_directory: bool = False,
     ) -> Path:
         question_dir = Path(runtime_context["question_dir"]).resolve()
         target = Path(raw_path)
@@ -164,23 +285,39 @@ class LocalMCPClient:
             candidates = [
                 (allowed / raw_path).resolve()
                 for allowed in allowed_paths
-                if allowed.is_dir() and (allowed / raw_path).resolve().is_file()
+                if allowed.is_dir()
+                and (
+                    (allowed / raw_path).resolve().is_file()
+                    or allow_directory
+                    and (allowed / raw_path).resolve().is_dir()
+                )
             ]
             if len(candidates) == 1:
                 target = candidates[0]
             elif len(candidates) > 1:
                 raise PermissionError(f"File path is ambiguous within declared directories: {raw_path}")
-        if not any(self._is_allowed_file_target(target=target, allowed=allowed) for allowed in allowed_paths):
+        if not any(
+            self._is_allowed_file_target(
+                target=target,
+                allowed=allowed,
+                allow_directory=allow_directory,
+            )
+            for allowed in allowed_paths
+        ):
             raise PermissionError(f"File is not declared in the question: {raw_path}")
         if not target.exists():
             raise FileNotFoundError(str(target))
-        if not target.is_file():
+        if not allow_directory and not target.is_file():
             raise IsADirectoryError(str(target))
+        if allow_directory and not target.is_file() and not target.is_dir():
+            raise FileNotFoundError(str(target))
         return target
 
-    def _is_allowed_file_target(self, *, target: Path, allowed: Path) -> bool:
+    def _is_allowed_file_target(self, *, target: Path, allowed: Path, allow_directory: bool = False) -> bool:
         if allowed.is_file():
             return target == allowed
         if allowed.is_dir():
+            if allow_directory and target == allowed:
+                return True
             return target != allowed and target.is_relative_to(allowed)
         return target == allowed

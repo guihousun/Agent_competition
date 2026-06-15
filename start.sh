@@ -51,15 +51,27 @@ detect_venv_python() {
   return 1
 }
 
-PYTHON_CMD="$(detect_python)"
-
-# If your agent needs third-party Python packages, add them to requirements.txt and uncomment:
-# "$PYTHON_CMD" -m venv .venv
-# PYTHON_CMD="$(detect_venv_python)" && "$PYTHON_CMD" -m pip install --trusted-host mirrors.tools.huawei.com -i http://mirrors.tools.huawei.com/pypi/simple -r requirements.txt
+dependencies_available() {
+  "$1" -c "import openpyxl, pandas, docx, pptx, pdfplumber, bs4, PIL" \
+    >/dev/null 2>&1
+}
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   echo "Usage: bash start.sh <question_path> <result_path> [package_id]" >&2
   exit 2
+fi
+
+PYTHON_CMD="$(detect_python)"
+if ! dependencies_available "$PYTHON_CMD"; then
+  echo "[DEPENDENCY_SETUP] installing requirements.txt" >&2
+  "$PYTHON_CMD" -m venv .venv
+  PYTHON_CMD="$(detect_venv_python)"
+  "$PYTHON_CMD" -m pip install \
+    --disable-pip-version-check \
+    --no-input \
+    --trusted-host mirrors.tools.huawei.com \
+    -i http://mirrors.tools.huawei.com/pypi/simple \
+    -r requirements.txt
 fi
 
 QUESTION_PATH="$1"
@@ -72,5 +84,3 @@ export packageId="$PACKAGE_ID"
 "$PYTHON_CMD" -u -m source.main \
   --question "$QUESTION_PATH" \
   --output "$RESULT_PATH"
-
-"$PYTHON_CMD" -m source.runtime.show_answers "$RESULT_PATH"

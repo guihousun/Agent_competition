@@ -45,6 +45,7 @@ class ScriptSubAgent(BaseSubAgent):
     entrypoint: str
     timeout_seconds: int
     allowed_tools: tuple[str, ...] = ()
+    tools_enabled: bool = True
 
     async def run(
         self,
@@ -67,18 +68,25 @@ class ScriptSubAgent(BaseSubAgent):
             raise RuntimeError(f"Sub-agent did not provide an instruction: {self.name}")
 
         client = ChatCompletionClient(ModelConfig.from_env())
-        available_tools = [
-            tool
-            for tool in (tools or [])
-            if not self.allowed_tools
-            or str(tool.get("function", {}).get("name") or "") in self.allowed_tools
-        ]
+        available_tools = []
+        if self.tools_enabled:
+            available_tools = [
+                tool
+                for tool in (tools or [])
+                if not self.allowed_tools
+                or str(tool.get("function", {}).get("name") or "") in self.allowed_tools
+            ]
+        operating_rule = (
+            "不得调用工具、读取文件或重新解题，只能检查并修复答案格式。"
+            if not self.tools_enabled
+            else "必须基于给定题目、上下文和工具结果工作。"
+        )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": (
                     f"你是 {self.role}。\n\n{instruction}\n\n"
-                    "必须基于给定题目、上下文和工具结果工作。"
+                    f"{operating_rule}"
                     "最终只输出要求的 JSON，不要输出 markdown 代码块或思考过程。"
                 ),
             },
@@ -89,10 +97,8 @@ class ScriptSubAgent(BaseSubAgent):
         ]
 
         max_iterations = 12
-        for iteration in range(max_iterations):
+        for _ in range(max_iterations):
             tool_choice = "auto" if available_tools else "none"
-            if self.name == "answer_checker" and available_tools and iteration == 0:
-                tool_choice = "required"
             completion = await client.create(
                 messages=messages,
                 tools=available_tools,
@@ -152,10 +158,6 @@ class ScriptSubAgent(BaseSubAgent):
         if self.name == "answer_checker":
             payload["question"] = question
             payload["answer"] = task
-        elif self.name == "data_reader":
-            payload["question"] = task
-            payload["files"] = files
-            payload["mode"] = _infer_data_reader_mode(task)
 
         completed = subprocess.run(
             [sys.executable, str(script_path)],
@@ -184,13 +186,6 @@ class ScriptSubAgent(BaseSubAgent):
         if not isinstance(result, dict):
             raise RuntimeError(f"Sub-agent prompt builder returned non-object JSON: {script_path}")
         return result
-
-
-def _infer_data_reader_mode(task: str) -> str:
-    normalized = task.lower()
-    overview_markers = ("overview", "探查", "概览", "结构", "schema", "全貌")
-    return "overview" if any(marker in normalized for marker in overview_markers) else "query"
-
 
 def _tool_calls_from_message(message: dict[str, Any]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
@@ -256,6 +251,7 @@ def _load_agent_package(agent_dir: Path) -> ScriptSubAgent | None:
         entrypoint=metadata.get("entrypoint", "scripts/run.py"),
         timeout_seconds=int(metadata.get("timeout_seconds", 30)),
         allowed_tools=tuple(str(name) for name in metadata.get("allowed_tools", [])),
+        tools_enabled=bool(metadata.get("tools_enabled", True)),
     )
 
 

@@ -1,20 +1,9 @@
 {
   "name": "answer_checker",
-  "description": "Answer verification sub-agent. Pass question + answer, get structured verification with fix suggestions. Uses LLM reasoning, not hardcoded rules.",
-  "role": "answer verification specialist",
+  "description": "Format-only post-checker. It cleans wrappers and repairs output syntax without recalculating or changing answer facts.",
+  "role": "answer format checker",
   "entrypoint": "scripts/run.py",
   "timeout_seconds": 300,
-  "allowed_tools": [
-    "answer_formatter",
-    "code_execute",
-    "csv_aggregate",
-    "csv_read",
-    "date_compute",
-    "skill_load",
-    "skill_read_resource",
-    "skill_run",
-    "sql_query",
-    "text_read_file",
-    "workday_calc"
-  ]
+  "tools_enabled": false,
+  "allowed_tools": []
 }

@@ -17,6 +17,7 @@ class AgentContext:
     mcp: LocalMCPClient
     workspace_dir: Path | None = None
     package_id: str = ""
+    soft_deadline_monotonic: float | None = None
 
     def is_tool_allowed(self, name: str) -> bool:
         return name == "agent_delegate" and bool(self.allowed_agents) or name in self.allowed_tools
